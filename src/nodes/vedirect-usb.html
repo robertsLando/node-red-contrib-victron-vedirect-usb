@@ -3,8 +3,12 @@
   'use strict';
 
   var VictronVEDirect = {
+    // Prefer the stable /dev/serial/by-id/... path (survives ttyUSB*
+    // renumbering across reboots/replugs) when the backend was able to
+    // resolve one; otherwise fall back to the raw device path.
     buildOption: function(port) {
-      return $('<option/>').val(port.path).text(port.path+' ('+port.manufacturer+': '+port.serialNumber+')').data(port);
+      var value = port.byId || port.path;
+      return $('<option/>').val(value).text(value+' ('+port.manufacturer+': '+port.serialNumber+')').data(port);
     },
 
     populateSelect: function(selector, ports) {
@@ -26,18 +30,44 @@
       selector.trigger('change');
     },
 
+    // Find the <option> whose underlying port data matches the given serial number
+    findOptionBySerialNumber: function(selector, serialNumber) {
+      return selector.find('option').filter(function() {
+        return $(this).data('serialNumber') === serialNumber;
+      });
+    },
+
     buildEditPanel: function(node) {
+      var portSelect = $('#node-input-port');
+      var serialNumberInput = $('#node-input-serialNumber');
+
       $.getJSON('/victron/vedirect-ports')
       .done(function(data) {
         if (data.length !== 0) {
-          VictronVEDirect.populateSelect($('#node-input-port'), data);
+          VictronVEDirect.populateSelect(portSelect, data);
         }
-        if (node.port) {
-          $('#node-input-port').val(node.port);
+
+        // Prefer matching on the previously stored serial number, since the
+        // device path (ttyUSB* or by-id) may have changed since this node was
+        // last saved. Fall back to the stored path if there's no match.
+        var matched = node.serialNumber
+          ? VictronVEDirect.findOptionBySerialNumber(portSelect, node.serialNumber)
+          : $();
+
+        if (matched.length !== 0) {
+          portSelect.val(matched.val());
+        } else if (node.port) {
+          portSelect.val(node.port);
         }
+
+        serialNumberInput.val(portSelect.find(':selected').data('serialNumber') || '');
       })
       .fail(function() {
         RED.notify("Unable to access the service endpoint.", "error");
+      });
+
+      portSelect.on('change', function() {
+        serialNumberInput.val(portSelect.find(':selected').data('serialNumber') || '');
       });
     }
   };
@@ -49,6 +79,7 @@
     defaults: {
       name: {value: ""},
       port: {value: "/dev/ttyUSB0"},
+      serialNumber: {value: ""},
       timeout: {value: 10, validate: function(v) {
         return v === "" || v === null || v === undefined || (!isNaN(parseFloat(v)) && parseFloat(v) > 0);
       }}
@@ -76,6 +107,7 @@
         <select id="node-input-port" required>
         </select>
     </div>
+    <input type="hidden" id="node-input-serialNumber">
     <div class="form-row">
         <label for="node-input-timeout"><i class="fa fa-clock-o"></i> Timeout</label>
         <input type="number" id="node-input-timeout" placeholder="10" min="0" step="1" style="width: 100px;">
@@ -91,6 +123,14 @@ A node for VE.Direct USB communication with Victron devices.
 Only needed configuration is to select the port where the ttyUSB dongle
 is connected to. Make sure that you have rights for reading the dongle
 (this might need you to be in group `dialup`).
+
+**Stable device selection**: On Linux, ports are listed by their
+`/dev/serial/by-id/...` path when available. Unlike `/dev/ttyUSB0`,
+`/dev/ttyUSB1`, etc., this path is tied to the device's USB serial number and
+stays the same across reboots and reconnections, even if multiple VE.Direct
+cables are plugged in and Linux re-orders the `ttyUSB*` device names. The
+underlying serial number is also remembered, so the correct device is still
+found even if it was originally configured using a plain `/dev/ttyUSB*` path.
 
 **Timeout**: Configure stale data detection timeout in seconds (default: 10).
 If no data is received within this time, the node will stop outputting data

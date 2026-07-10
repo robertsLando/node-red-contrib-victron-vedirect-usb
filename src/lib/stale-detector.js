@@ -12,12 +12,12 @@ function parseTimeout (configValue) {
   if (configValue === undefined || configValue === null || configValue === '') {
     return null
   }
-  
+
   const parsed = parseFloat(configValue)
   if (isNaN(parsed) || parsed <= 0) {
     return null
   }
-  
+
   return parsed * 1000 // Convert seconds to milliseconds
 }
 
@@ -33,12 +33,12 @@ function isStale (lastDataTime, timeoutMs, currentTime = Date.now()) {
   if (!timeoutMs) {
     return false
   }
-  
+
   // No data received yet
   if (!lastDataTime) {
     return true
   }
-  
+
   // Check if timeout exceeded
   return (currentTime - lastDataTime) > timeoutMs
 }
@@ -53,11 +53,11 @@ function getStatusDisplay (isDataStale, productName) {
   if (isDataStale) {
     return { fill: 'yellow', shape: 'ring', text: 'stale data' }
   }
-  
+
   if (productName) {
     return { fill: 'green', shape: 'dot', text: productName }
   }
-  
+
   return { fill: 'green', shape: 'dot', text: 'connected' }
 }
 
