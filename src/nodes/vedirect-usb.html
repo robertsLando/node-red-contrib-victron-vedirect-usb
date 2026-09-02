@@ -41,7 +41,10 @@
       var portSelect = $('#node-input-port');
       var serialNumberInput = $('#node-input-serialNumber');
 
-      $.getJSON('/victron/vedirect-ports')
+      // Relative URL: Node-RED's $.ajaxSetup prefixes the admin root (and the
+      // auth header) only for paths that don't start with '/', so a leading
+      // slash would 404 whenever httpAdminRoot is not '/'.
+      $.getJSON('victron/vedirect-ports')
       .done(function(data) {
         if (data.length !== 0) {
           VictronVEDirect.populateSelect(portSelect, data);
