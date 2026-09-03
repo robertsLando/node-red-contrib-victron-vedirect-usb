@@ -1,4 +1,12 @@
-const { parseTimeout, isStale, getStatusDisplay } = require('../../../src/lib/stale-detector')
+const {
+  parseTimeout,
+  isStale,
+  getStatusDisplay,
+  CONNECTING,
+  CONNECTED,
+  RECONNECTING,
+  ERROR
+} = require('../../../src/lib/stale-detector')
 
 describe('stale-detector', () => {
   describe('parseTimeout', () => {
@@ -159,6 +167,65 @@ describe('stale-detector', () => {
         shape: 'ring',
         text: 'stale data'
       })
+    })
+  })
+
+  describe('getStatusDisplay connection states', () => {
+    it('should report an error over stale data', () => {
+      expect(getStatusDisplay(true, 'BMV-700', { state: ERROR, error: 'Port is not open' })).toEqual({
+        fill: 'red',
+        shape: 'dot',
+        text: 'Port is not open'
+      })
+    })
+
+    it('should fall back to a generic error text', () => {
+      expect(getStatusDisplay(false, null, { state: ERROR })).toEqual({
+        fill: 'red',
+        shape: 'dot',
+        text: 'error'
+      })
+    })
+
+    it('should report connecting over stale data', () => {
+      expect(getStatusDisplay(true, 'BMV-700', { state: CONNECTING })).toEqual({
+        fill: 'blue',
+        shape: 'ring',
+        text: 'connecting'
+      })
+    })
+
+    it('should report reconnecting over stale data', () => {
+      expect(getStatusDisplay(true, 'BMV-700', { state: RECONNECTING })).toEqual({
+        fill: 'yellow',
+        shape: 'ring',
+        text: 'reconnecting'
+      })
+    })
+
+    it('should show stale data once connected', () => {
+      expect(getStatusDisplay(true, 'BMV-700', { state: CONNECTED })).toEqual({
+        fill: 'yellow',
+        shape: 'ring',
+        text: 'stale data'
+      })
+    })
+
+    it('should show the product once connected with fresh data', () => {
+      expect(getStatusDisplay(false, 'BMV-700', { state: CONNECTED })).toEqual({
+        fill: 'green',
+        shape: 'dot',
+        text: 'BMV-700'
+      })
+    })
+
+    it('should assume connected when no connection state is given', () => {
+      expect(getStatusDisplay(true, 'BMV-700', undefined)).toEqual(
+        getStatusDisplay(true, 'BMV-700', { state: CONNECTED })
+      )
+      expect(getStatusDisplay(false, 'BMV-700', {})).toEqual(
+        getStatusDisplay(false, 'BMV-700', { state: CONNECTED })
+      )
     })
   })
 })

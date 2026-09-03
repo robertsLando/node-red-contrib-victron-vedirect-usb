@@ -56,12 +56,30 @@ I: {"value":0,"description":"Main or channel 1 battery current","units":"mA"}
 
 The above example is abbreviated. It typically consists of more labels.
 
+## Reconnecting
+
+The node supervises its serial connection and reopens it by itself, so a
+disconnected or silent cable no longer needs a Node-RED restart to recover. It
+reconnects when:
+
+- the device is unplugged or the driver resets the port
+- the port cannot be opened, or opening fails with an error
+- the port stays open but sends nothing for the configured timeout
+
+Retries back off exponentially from 1 second up to 30 seconds, and the port is
+re-resolved on every attempt, so a cable that comes back on a different
+`/dev/ttyUSB*` name is still found. The backoff resets as soon as a frame
+arrives.
+
 ## Status
 
-The node shows a green dot with the connected product when functional. It will
-show a yellow dot with "stale data" when no data has been received within the
-configured timeout period. It will show a red dot with the error message when
-something went wrong.
+| Status | Meaning |
+| --- | --- |
+| Blue ring, "connecting" | Opening the serial port |
+| Green dot, product name | Connected and receiving data |
+| Yellow ring, "stale data" | Connected, but no data within the timeout |
+| Yellow ring, "reconnecting" | Waiting to retry after losing the port |
+| Red dot, error message | The port could not be opened or reported an error |
 
 ## Development
 
@@ -74,6 +92,8 @@ src/
 │   ├── products.js
 │   ├── field-definitions.js
 │   ├── value-parser.js
+│   ├── port-resolver.js
+│   ├── reconnect-policy.js
 │   └── stale-detector.js
 ├── services/         # Business logic and stream handlers
 │   ├── parser.js

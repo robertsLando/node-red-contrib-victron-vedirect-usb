@@ -125,7 +125,34 @@ const unknownProductFrame = {
   Checksum: 'b'
 }
 
+// Serialize a field object into the bytes a VE.Direct device puts on the wire:
+// CRLF-delimited "key\tvalue" lines ending in a Checksum line whose single
+// byte makes the whole frame sum to 0 mod 256.
+function toWireFrame (fields) {
+  const lines = Object.keys(fields)
+    .filter((key) => key !== 'Checksum')
+    .map((key) => `${key}\t${fields[key]}`)
+
+  // The parser rebuilds the frame as CRLF + line for every line it receives,
+  // so the checksum has to be computed over that same shape.
+  const withoutByte = Buffer.concat(
+    lines.concat('Checksum\t').map((line) => Buffer.concat([
+      Buffer.from([0x0d, 0x0a]),
+      Buffer.from(line)
+    ]))
+  )
+
+  const sum = withoutByte.reduce((total, byte) => (total + byte) & 255, 0)
+
+  return Buffer.concat([
+    Buffer.from(lines.concat('Checksum\t').join('\r\n')),
+    Buffer.from([(256 - sum) & 255]),
+    Buffer.from([0x0d, 0x0a])
+  ])
+}
+
 module.exports = {
+  toWireFrame,
   smartShuntFrame,
   mpptFrame,
   bmvFrame,

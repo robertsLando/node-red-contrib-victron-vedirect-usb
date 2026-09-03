@@ -3,6 +3,11 @@
  * Pure functions for detecting when data becomes stale based on timeout configuration
  */
 
+const CONNECTING = 'connecting'
+const CONNECTED = 'connected'
+const RECONNECTING = 'reconnecting'
+const ERROR = 'error'
+
 /**
  * Parse timeout configuration value
  * @param {*} configValue - The timeout value from node configuration
@@ -44,12 +49,34 @@ function isStale (lastDataTime, timeoutMs, currentTime = Date.now()) {
 }
 
 /**
- * Determine the appropriate status display based on stale state and product info
+ * Determine the appropriate status display based on connection state, stale
+ * state and product info.
+ *
+ * Connection state takes precedence: while the port is down, "stale data" is a
+ * symptom rather than the thing the user needs to see, and a periodic stale
+ * check must not paint over a connection error.
  * @param {boolean} isDataStale - Whether the data is currently stale
  * @param {string|null} productName - The product name, if known
+ * @param {Object} [connection] - Connection state
+ * @param {string} [connection.state] - One of 'connecting', 'connected', 'reconnecting', 'error'
+ * @param {string} [connection.error] - Error message, when state is 'error'
  * @returns {Object} Status object with fill, shape, and text properties
  */
-function getStatusDisplay (isDataStale, productName) {
+function getStatusDisplay (isDataStale, productName, connection) {
+  const state = (connection && connection.state) || CONNECTED
+
+  if (state === ERROR) {
+    return { fill: 'red', shape: 'dot', text: (connection && connection.error) || 'error' }
+  }
+
+  if (state === CONNECTING) {
+    return { fill: 'blue', shape: 'ring', text: 'connecting' }
+  }
+
+  if (state === RECONNECTING) {
+    return { fill: 'yellow', shape: 'ring', text: 'reconnecting' }
+  }
+
   if (isDataStale) {
     return { fill: 'yellow', shape: 'ring', text: 'stale data' }
   }
@@ -64,5 +91,9 @@ function getStatusDisplay (isDataStale, productName) {
 module.exports = {
   parseTimeout,
   isStale,
-  getStatusDisplay
+  getStatusDisplay,
+  CONNECTING,
+  CONNECTED,
+  RECONNECTING,
+  ERROR
 }
