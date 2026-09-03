@@ -3,10 +3,11 @@
  * Pure functions for detecting when data becomes stale based on timeout configuration
  */
 
-const CONNECTING = 'connecting'
-const CONNECTED = 'connected'
-const RECONNECTING = 'reconnecting'
-const ERROR = 'error'
+// Used to supervise the connection when stale detection is switched off. A
+// healthy VE.Direct device sends a frame about every second, so a minute of
+// silence means the link is dead even if the port still looks open, and the
+// node would otherwise sit there forever with no detector at all.
+const DEFAULT_LIVENESS_TIMEOUT_MS = 60000
 
 /**
  * Parse timeout configuration value
@@ -48,52 +49,8 @@ function isStale (lastDataTime, timeoutMs, currentTime = Date.now()) {
   return (currentTime - lastDataTime) > timeoutMs
 }
 
-/**
- * Determine the appropriate status display based on connection state, stale
- * state and product info.
- *
- * Connection state takes precedence: while the port is down, "stale data" is a
- * symptom rather than the thing the user needs to see, and a periodic stale
- * check must not paint over a connection error.
- * @param {boolean} isDataStale - Whether the data is currently stale
- * @param {string|null} productName - The product name, if known
- * @param {Object} [connection] - Connection state
- * @param {string} [connection.state] - One of 'connecting', 'connected', 'reconnecting', 'error'
- * @param {string} [connection.error] - Error message, when state is 'error'
- * @returns {Object} Status object with fill, shape, and text properties
- */
-function getStatusDisplay (isDataStale, productName, connection) {
-  const state = (connection && connection.state) || CONNECTED
-
-  if (state === ERROR) {
-    return { fill: 'red', shape: 'dot', text: (connection && connection.error) || 'error' }
-  }
-
-  if (state === CONNECTING) {
-    return { fill: 'blue', shape: 'ring', text: 'connecting' }
-  }
-
-  if (state === RECONNECTING) {
-    return { fill: 'yellow', shape: 'ring', text: 'reconnecting' }
-  }
-
-  if (isDataStale) {
-    return { fill: 'yellow', shape: 'ring', text: 'stale data' }
-  }
-
-  if (productName) {
-    return { fill: 'green', shape: 'dot', text: productName }
-  }
-
-  return { fill: 'green', shape: 'dot', text: 'connected' }
-}
-
 module.exports = {
   parseTimeout,
   isStale,
-  getStatusDisplay,
-  CONNECTING,
-  CONNECTED,
-  RECONNECTING,
-  ERROR
+  DEFAULT_LIVENESS_TIMEOUT_MS
 }

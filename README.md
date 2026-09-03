@@ -69,7 +69,11 @@ reconnects when:
 Retries back off exponentially from 1 second up to 30 seconds, and the port is
 re-resolved on every attempt, so a cable that comes back on a different
 `/dev/ttyUSB*` name is still found. The backoff resets as soon as a frame
-arrives.
+arrives, and a repeated failure is logged once rather than once per attempt.
+
+Supervision does not depend on the timeout setting. With stale detection
+disabled the node still watches for a silent port, using a 60 second liveness
+timeout instead of the configured one.
 
 ## Status
 
@@ -77,8 +81,10 @@ arrives.
 | --- | --- |
 | Blue ring, "connecting" | Opening the serial port |
 | Green dot, product name | Connected and receiving data |
+| Yellow ring, "waiting for data" | Connected, no frame received yet |
 | Yellow ring, "stale data" | Connected, but no data within the timeout |
-| Yellow ring, "reconnecting" | Waiting to retry after losing the port |
+| Yellow ring, "reconnecting (disconnected)" | The cable or port went away; waiting to retry |
+| Yellow ring, "reconnecting (no data)" | The port is open but the device went silent; waiting to retry |
 | Red dot, error message | The port could not be opened or reported an error |
 
 ## Development
@@ -92,6 +98,7 @@ src/
 │   ├── products.js
 │   ├── field-definitions.js
 │   ├── value-parser.js
+│   ├── connection-status.js
 │   ├── port-resolver.js
 │   ├── reconnect-policy.js
 │   └── stale-detector.js

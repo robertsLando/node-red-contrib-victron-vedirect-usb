@@ -29,6 +29,9 @@ class VEDirect extends EventEmitter {
 
     this.closed = false
     this.opening = true
+    this.closing = false
+    this.disposed = false
+    this.pendingClose = []
 
     this.serial = new SerialPort({
       path,
@@ -118,12 +121,28 @@ class VEDirect extends EventEmitter {
   /**
    * Tear the connection down. Safe to call more than once, and on a port that
    * is already gone. Never emits 'close' - the caller is the one closing.
-   * @param {function=} callback - Called once the port is closed
+   * @param {function=} callback - Called with the close error, or null, once the port is closed
    */
   close (callback) {
     const done = callback || (() => {})
 
     this.closed = true
+
+    if (this.disposed) {
+      return process.nextTick(() => done(null))
+    }
+
+    // Queue late callers behind an in-flight close. Re-running the teardown
+    // would strip the listeners the first close is waiting on, and its
+    // callback - which is Node-RED's `done` - would never fire.
+    if (this.closing) {
+      this.pendingClose.push(done)
+      return
+    }
+
+    this.closing = true
+    this.pendingClose = [done]
+
     this.serial.unpipe(this.rl)
     this.rl.unpipe(this.ve)
     this.ve.unpipe(this.output)
@@ -137,14 +156,23 @@ class VEDirect extends EventEmitter {
     this.serial.removeAllListeners('error')
     this.serial.on('error', (err) => debugSerial('Error after close: %o', err))
 
-    const closePort = () => {
-      this.serial.close((err) => {
-        if (err) {
-          debugSerial('Error closing serial port: %o', err)
-        }
-        done()
-      })
+    const finish = (err) => {
+      if (err) {
+        debugSerial('Error closing serial port: %o', err)
+      }
+
+      this.opening = false
+      this.closing = false
+      this.disposed = true
+
+      const callbacks = this.pendingClose
+      this.pendingClose = []
+
+      // Always async, so a caller's callback never runs before close() returns.
+      process.nextTick(() => callbacks.forEach((cb) => cb(err || null)))
     }
+
+    const closePort = () => this.serial.close(finish)
 
     if (this.serial.isOpen) {
       return closePort()
@@ -155,12 +183,12 @@ class VEDirect extends EventEmitter {
     if (this.opening) {
       debugSerial('Close requested while still opening')
       this.serial.once('open', closePort)
-      this.serial.once('error', () => done())
+      this.serial.once('error', finish)
       return
     }
 
     debugSerial('Close requested but port is not open')
-    done()
+    finish(null)
   }
 }
 

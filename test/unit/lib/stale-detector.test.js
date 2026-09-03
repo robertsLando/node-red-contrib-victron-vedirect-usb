@@ -1,12 +1,4 @@
-const {
-  parseTimeout,
-  isStale,
-  getStatusDisplay,
-  CONNECTING,
-  CONNECTED,
-  RECONNECTING,
-  ERROR
-} = require('../../../src/lib/stale-detector')
+const { parseTimeout, isStale, DEFAULT_LIVENESS_TIMEOUT_MS } = require('../../../src/lib/stale-detector')
 
 describe('stale-detector', () => {
   describe('parseTimeout', () => {
@@ -103,129 +95,11 @@ describe('stale-detector', () => {
     })
   })
 
-  describe('getStatusDisplay', () => {
-    test('should return stale status when data is stale', () => {
-      expect(getStatusDisplay(true, 'SmartShunt 500A/50mV')).toEqual({
-        fill: 'yellow',
-        shape: 'ring',
-        text: 'stale data'
-      })
-    })
-
-    test('should return stale status when data is stale and no product', () => {
-      expect(getStatusDisplay(true, null)).toEqual({
-        fill: 'yellow',
-        shape: 'ring',
-        text: 'stale data'
-      })
-    })
-
-    test('should return product name when data is fresh and product known', () => {
-      expect(getStatusDisplay(false, 'SmartShunt 500A/50mV')).toEqual({
-        fill: 'green',
-        shape: 'dot',
-        text: 'SmartShunt 500A/50mV'
-      })
-    })
-
-    test('should return connected status when data is fresh but no product', () => {
-      expect(getStatusDisplay(false, null)).toEqual({
-        fill: 'green',
-        shape: 'dot',
-        text: 'connected'
-      })
-    })
-
-    test('should return connected status when data is fresh and product is empty string', () => {
-      expect(getStatusDisplay(false, '')).toEqual({
-        fill: 'green',
-        shape: 'dot',
-        text: 'connected'
-      })
-    })
-
-    test('should handle various product names', () => {
-      const products = [
-        'BMV-700',
-        'SmartSolar MPPT 250|100',
-        'Phoenix Inverter 12V 250VA 230V'
-      ]
-
-      products.forEach(product => {
-        expect(getStatusDisplay(false, product)).toEqual({
-          fill: 'green',
-          shape: 'dot',
-          text: product
-        })
-      })
-    })
-
-    test('should prioritize stale status over product name', () => {
-      // Even with a product name, stale data should show stale status
-      expect(getStatusDisplay(true, 'BMV-700')).toEqual({
-        fill: 'yellow',
-        shape: 'ring',
-        text: 'stale data'
-      })
-    })
-  })
-
-  describe('getStatusDisplay connection states', () => {
-    it('should report an error over stale data', () => {
-      expect(getStatusDisplay(true, 'BMV-700', { state: ERROR, error: 'Port is not open' })).toEqual({
-        fill: 'red',
-        shape: 'dot',
-        text: 'Port is not open'
-      })
-    })
-
-    it('should fall back to a generic error text', () => {
-      expect(getStatusDisplay(false, null, { state: ERROR })).toEqual({
-        fill: 'red',
-        shape: 'dot',
-        text: 'error'
-      })
-    })
-
-    it('should report connecting over stale data', () => {
-      expect(getStatusDisplay(true, 'BMV-700', { state: CONNECTING })).toEqual({
-        fill: 'blue',
-        shape: 'ring',
-        text: 'connecting'
-      })
-    })
-
-    it('should report reconnecting over stale data', () => {
-      expect(getStatusDisplay(true, 'BMV-700', { state: RECONNECTING })).toEqual({
-        fill: 'yellow',
-        shape: 'ring',
-        text: 'reconnecting'
-      })
-    })
-
-    it('should show stale data once connected', () => {
-      expect(getStatusDisplay(true, 'BMV-700', { state: CONNECTED })).toEqual({
-        fill: 'yellow',
-        shape: 'ring',
-        text: 'stale data'
-      })
-    })
-
-    it('should show the product once connected with fresh data', () => {
-      expect(getStatusDisplay(false, 'BMV-700', { state: CONNECTED })).toEqual({
-        fill: 'green',
-        shape: 'dot',
-        text: 'BMV-700'
-      })
-    })
-
-    it('should assume connected when no connection state is given', () => {
-      expect(getStatusDisplay(true, 'BMV-700', undefined)).toEqual(
-        getStatusDisplay(true, 'BMV-700', { state: CONNECTED })
-      )
-      expect(getStatusDisplay(false, 'BMV-700', {})).toEqual(
-        getStatusDisplay(false, 'BMV-700', { state: CONNECTED })
-      )
+  describe('DEFAULT_LIVENESS_TIMEOUT_MS', () => {
+    it('should be long enough to outlast normal frame spacing', () => {
+      // Devices send about one frame per second; anything under a few seconds
+      // would tear down a healthy connection.
+      expect(DEFAULT_LIVENESS_TIMEOUT_MS).toBeGreaterThan(5000)
     })
   })
 })

@@ -7,7 +7,6 @@ class MockSerialPort extends PassThrough {
     super()
     this.options = options
     this.isOpen = false
-    this.closeCallbacks = []
     MockSerialPort.instances.push(this)
   }
 
@@ -21,7 +20,6 @@ class MockSerialPort extends PassThrough {
       return process.nextTick(() => callback && callback(new Error('Port is not open')))
     }
     this.isOpen = false
-    this.closeCallbacks.push(callback)
     process.nextTick(() => callback && callback(null))
   }
 
@@ -185,6 +183,62 @@ describe('VEDirect', () => {
 
     reader.close(() => {
       reader.close(done)
+    })
+  })
+
+  it('should call back every waiter when several closes overlap', (done) => {
+    const reader = build()
+    const settled = []
+
+    reader.close(() => settled.push('first'))
+    reader.close(() => settled.push('second'))
+    reader.close(() => {
+      expect(settled).toEqual(['first', 'second'])
+      done()
+    })
+
+    port.open()
+  })
+
+  it('should report a failed port close to the caller', (done) => {
+    const reader = build()
+    port.open()
+    port.close = (callback) => process.nextTick(() => callback(new Error('EIO')))
+
+    reader.close((err) => {
+      expect(err.message).toBe('EIO')
+      done()
+    })
+  })
+
+  it('should clear opening once a mid-open close settles', (done) => {
+    const reader = build()
+
+    reader.close(() => {
+      expect(reader.opening).toBe(false)
+      done()
+    })
+
+    port.open()
+  })
+
+  it('should drop a frame that straddles the close', (done) => {
+    const reader = build()
+    port.open()
+    const onData = jest.fn()
+    reader.on('data', onData)
+
+    // Half a frame is on the wire when the owner closes; the rest arrives
+    // afterwards and must not reach an owner that has moved on.
+    const split = Math.floor(VALID_FRAME.length / 2)
+    port.write(VALID_FRAME.subarray(0, split))
+
+    reader.close(() => {
+      port.write(VALID_FRAME.subarray(split))
+      setImmediate(() => {
+        expect(onData).not.toHaveBeenCalled()
+        done()
+      })
     })
   })
 })

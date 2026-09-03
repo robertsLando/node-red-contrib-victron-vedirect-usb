@@ -147,16 +147,22 @@ inject node to get output every x seconds.
 ### Reconnecting
 
 The node reopens the serial port by itself when the device is unplugged, when
-the port cannot be opened, or when the port stays open but stops sending data
-for the timeout period. Retries back off from 1 second up to 30 seconds, and
-the port is re-resolved on every attempt so a cable that comes back on a
-different `/dev/ttyUSB*` name is still found.
+the port cannot be opened, or when the port stays open but stops sending data.
+Retries back off from 1 second up to 30 seconds, and the port is re-resolved on
+every attempt so a cable that comes back on a different `/dev/ttyUSB*` name is
+still found.
+
+This does not depend on the timeout setting. With stale detection disabled the
+node still watches for a silent port, using a 60 second liveness timeout
+instead of the configured one.
 
 ### Status
 
 - Blue ring, "connecting": opening the serial port.
 - Green dot with the product name: connected and receiving data.
+- Yellow ring, "waiting for data": connected, no frame received yet.
 - Yellow ring, "stale data": connected, but no fresh data within the timeout.
-- Yellow ring, "reconnecting": waiting to retry after losing the port.
+- Yellow ring, "reconnecting (disconnected)": the cable or port went away.
+- Yellow ring, "reconnecting (no data)": the port is open but the device went silent.
 - Red dot with a message: the port could not be opened or reported an error.
 </script>

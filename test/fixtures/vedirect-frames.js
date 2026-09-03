@@ -125,33 +125,38 @@ const unknownProductFrame = {
   Checksum: 'b'
 }
 
-// Serialize a field object into the bytes a VE.Direct device puts on the wire:
-// CRLF-delimited "key\tvalue" lines ending in a Checksum line whose single
-// byte makes the whole frame sum to 0 mod 256.
-function toWireFrame (fields) {
-  const lines = Object.keys(fields)
-    .filter((key) => key !== 'Checksum')
-    .map((key) => `${key}\t${fields[key]}`)
-
-  // The parser rebuilds the frame as CRLF + line for every line it receives,
-  // so the checksum has to be computed over that same shape.
-  const withoutByte = Buffer.concat(
+// The VE.Direct checksum invariant: the parser rebuilds a frame as CRLF + line
+// for every line it receives, and the byte after "Checksum\t" is whatever makes
+// that whole buffer sum to 0 mod 256.
+function checksumByte (lines) {
+  const buffer = Buffer.concat(
     lines.concat('Checksum\t').map((line) => Buffer.concat([
       Buffer.from([0x0d, 0x0a]),
       Buffer.from(line)
     ]))
   )
 
-  const sum = withoutByte.reduce((total, byte) => (total + byte) & 255, 0)
+  const sum = buffer.reduce((total, byte) => (total + byte) & 255, 0)
+
+  return (256 - sum) & 255
+}
+
+// Serialize a field object into the bytes a VE.Direct device puts on the wire:
+// CRLF-delimited "key\tvalue" lines ending in a Checksum line.
+function toWireFrame (fields) {
+  const lines = Object.keys(fields)
+    .filter((key) => key !== 'Checksum')
+    .map((key) => `${key}\t${fields[key]}`)
 
   return Buffer.concat([
     Buffer.from(lines.concat('Checksum\t').join('\r\n')),
-    Buffer.from([(256 - sum) & 255]),
+    Buffer.from([checksumByte(lines)]),
     Buffer.from([0x0d, 0x0a])
   ])
 }
 
 module.exports = {
+  checksumByte,
   toWireFrame,
   smartShuntFrame,
   mpptFrame,

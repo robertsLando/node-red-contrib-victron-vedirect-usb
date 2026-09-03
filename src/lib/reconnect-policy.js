@@ -20,7 +20,9 @@ function nextDelay (attempt, random = Math.random) {
   const base = Math.min(BASE_DELAY_MS * Math.pow(2, exponent), MAX_DELAY_MS)
   const jitter = base * JITTER_RATIO * (random() * 2 - 1)
 
-  return Math.round(base + jitter)
+  // Clamp after jitter, not before: jittering the cap would overshoot the
+  // maximum delay this module documents.
+  return Math.min(MAX_DELAY_MS, Math.round(base + jitter))
 }
 
 module.exports = {

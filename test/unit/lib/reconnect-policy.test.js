@@ -28,12 +28,17 @@ describe('reconnect-policy', () => {
       expect(nextDelay(5, () => 0)).toBe(24000)
     })
 
+    it('should never exceed the maximum, jitter included', () => {
+      expect(nextDelay(5, () => 0.999999)).toBe(MAX_DELAY_MS)
+      expect(nextDelay(50, () => 0.999999)).toBe(MAX_DELAY_MS)
+    })
+
     it('should stay within bounds for real randomness', () => {
       for (let attempt = 0; attempt < 20; attempt++) {
         for (let i = 0; i < 50; i++) {
           const delay = nextDelay(attempt)
           expect(delay).toBeGreaterThanOrEqual(BASE_DELAY_MS * 0.8)
-          expect(delay).toBeLessThanOrEqual(MAX_DELAY_MS * 1.2)
+          expect(delay).toBeLessThanOrEqual(MAX_DELAY_MS)
         }
       }
     })
