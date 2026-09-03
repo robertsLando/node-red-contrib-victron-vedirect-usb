@@ -723,8 +723,24 @@ describe('VEDirectUSB node', () => {
     expect(node.warn.mock.calls.some(([msg]) => /Gave up waiting/.test(msg))).toBe(false)
   })
 
-  it('should give up on a close that never finishes, naming the stuck port', async () => {
-    const node = await connectedNode()
+  it('should give up on a close that never finishes, naming only the stuck port', async () => {
+    const node = buildNode({ port: '/dev/ttyUSB0', serialNumber: 'HQ2123ABCDE' })
+    mockList.mockResolvedValue([{ path: '/dev/ttyUSB0', serialNumber: 'HQ2123ABCDE' }])
+    await settle()
+
+    // Close a couple of readers cleanly first: their entries must not linger
+    // and get named alongside the one that is actually stuck.
+    for (let i = 0; i < 2; i++) {
+      current().emit('close', { disconnected: true })
+      jest.advanceTimersByTime(PAST_BACKOFF)
+      await settle()
+    }
+
+    mockList.mockResolvedValue([{ path: '/dev/ttyUSB3', serialNumber: 'HQ2123ABCDE' }])
+    current().emit('close', { disconnected: true })
+    jest.advanceTimersByTime(PAST_BACKOFF)
+    await settle()
+    expect(current().path).toBe('/dev/ttyUSB3')
     current().holdClose = true
 
     let done = false
@@ -739,8 +755,18 @@ describe('VEDirectUSB node', () => {
     await closing
 
     expect(done).toBe(true)
-    expect(node.warn.mock.calls.some(([msg]) =>
-      /Gave up waiting for \/dev\/ttyUSB0 to close/.test(msg))).toBe(true)
+    const gaveUp = node.warn.mock.calls.map(([msg]) => msg).find((msg) => /Gave up waiting/.test(msg))
+    expect(gaveUp).toBe('Gave up waiting for /dev/ttyUSB3 to close')
+  })
+
+  it('should leave no retry armed when closed mid-backoff', async () => {
+    const node = buildNode()
+    await settle()
+
+    current().emit('error', new Error('Permission denied'))
+    await closeNode(node)
+
+    expect(jest.getTimerCount()).toBe(0)
   })
 
   // The headline claim is "1s up to 30s". Feeding a constant to nextDelay
