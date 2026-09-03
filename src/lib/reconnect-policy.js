@@ -1,7 +1,14 @@
 /**
- * Reconnect backoff policy
- * Pure functions for spacing out serial port reconnection attempts
+ * Reconnect policy
+ * When to give up on a connection, and how long to wait before the next try
  */
+
+// How long a port may stay open and silent before we treat the link as dead.
+// A healthy VE.Direct device sends a frame about every second, so a minute of
+// silence means the link is gone even though the file descriptor still looks
+// fine. Used as a floor, never as a ceiling: it answers "is the link dead",
+// which is a different question from the configured output-staleness timeout.
+const LIVENESS_TIMEOUT_MS = 60000
 
 const BASE_DELAY_MS = 1000
 const MAX_DELAY_MS = 30000
@@ -27,6 +34,7 @@ function nextDelay (attempt, random = Math.random) {
 
 module.exports = {
   nextDelay,
+  LIVENESS_TIMEOUT_MS,
   BASE_DELAY_MS,
   MAX_DELAY_MS
 }

@@ -71,9 +71,11 @@ re-resolved on every attempt, so a cable that comes back on a different
 `/dev/ttyUSB*` name is still found. The backoff resets as soon as a frame
 arrives, and a repeated failure is logged once rather than once per attempt.
 
-Supervision does not depend on the timeout setting. With stale detection
-disabled the node still watches for a silent port, using a 60 second liveness
-timeout instead of the configured one.
+Supervision does not depend on the timeout setting, and retries never stop. The
+node treats a port as dead after 60 seconds of silence, or after the configured
+timeout if that is longer — the timeout only ever lengthens the window, since
+"is this reading fresh enough to send" and "is this link dead" are different
+questions.
 
 ## Status
 
@@ -85,7 +87,11 @@ timeout instead of the configured one.
 | Yellow ring, "stale data" | Connected, but no data within the timeout |
 | Yellow ring, "reconnecting (disconnected)" | The cable or port went away; waiting to retry |
 | Yellow ring, "reconnecting (no data)" | The port is open but the device went silent; waiting to retry |
-| Red dot, error message | The port could not be opened or reported an error |
+| Red dot, error message + "(retrying)" | The port could not be opened or reported an error |
+
+Every reconnect is logged: a warning names the failure, repeated once every ten
+attempts with the attempt count and how long the outage has lasted, and an info
+line records the recovery.
 
 ## Development
 

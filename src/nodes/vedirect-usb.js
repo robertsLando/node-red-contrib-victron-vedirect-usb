@@ -4,21 +4,29 @@ module.exports = function (RED) {
   const path = require('path')
   const VEDirect = require('../services/vedirect')
   const { SerialPort } = require('serialport')
-  const { parseTimeout, isStale, DEFAULT_LIVENESS_TIMEOUT_MS } = require('../lib/stale-detector')
+  const { parseTimeout, isStale } = require('../lib/stale-detector')
   const {
     getStatusDisplay,
     CONNECTING,
     CONNECTED,
     RECONNECTING,
-    ERROR
+    ERROR,
+    REASON_CLOSE,
+    REASON_STALE,
+    REASON_ERROR,
+    REASON_OPEN_FAILURE
   } = require('../lib/connection-status')
   const { resolveSerialPort } = require('../lib/port-resolver')
-  const { nextDelay } = require('../lib/reconnect-policy')
+  const { nextDelay, LIVENESS_TIMEOUT_MS } = require('../lib/reconnect-policy')
   const debug = require('debug')('vedirect:node')
 
   // How often the supervisor looks at the connection. Frequent enough that the
   // status badge tracks reality, cheap enough to run forever.
   const LIVENESS_CHECK_INTERVAL_MS = 1000
+
+  // Re-warn every this many attempts during a long outage, so the log shows an
+  // outage is ongoing without one line per retry.
+  const WARN_REPEAT_ATTEMPTS = 10
 
   // /dev/serial/by-id/... symlinks are maintained by udev on Linux and stay
   // pointing at the same physical device across reboots/replugs, unlike
@@ -58,7 +66,7 @@ module.exports = function (RED) {
     debug('Initializing VEDirectUSB node on port %s', config.port)
 
     let dataReader = null
-    let closed = false
+    let shuttingDown = false
     let accumulatedData = {} // Accumulated data across all frames
     let productName = null
     let dataEventCount = 0
@@ -67,25 +75,25 @@ module.exports = function (RED) {
     let livenessInterval = null
     let reconnectTimer = null
     let reconnectAttempts = 0
+    let failingSince = null
     let lastWarned = null
-    let connection = { state: CONNECTING }
+    let connection = {}
 
     // Readers whose close() is still in flight. Node-RED must not report the
     // node closed while a file descriptor is still held, or the redeploy that
     // follows reopens the same path against a port the kernel has not released.
     const closingReaders = new Set()
 
-    // Parse timeout configuration
     const timeoutMs = parseTimeout(config.timeout)
 
-    // Stale detection gates the output; supervision has to happen either way,
-    // otherwise switching stale detection off would also switch off the only
-    // detector for a port that stays open but stops sending.
-    const livenessMs = timeoutMs || DEFAULT_LIVENESS_TIMEOUT_MS
+    // "Is the output fresh enough to send" and "is the link dead" are different
+    // questions, so the output timeout only ever lengthens the supervision
+    // window. Reusing a short timeout here would tear down a healthy port
+    // between two frames.
+    const livenessMs = Math.max(timeoutMs || 0, LIVENESS_TIMEOUT_MS)
 
     debug('Stale detection timeout: %s ms, liveness timeout: %d ms', timeoutMs, livenessMs)
 
-    // Function to update status based on current state
     function updateStatus () {
       node.status(getStatusDisplay({
         ...connection,
@@ -100,27 +108,32 @@ module.exports = function (RED) {
       updateStatus()
     }
 
-    // Warn once per distinct failure, not once per attempt: a cable that flaps
-    // for a week would otherwise bury every other log line, and the repeats
-    // carry no information the first one didn't.
-    function reportFailure (err) {
-      const message = (err && err.message) || String(err)
+    // Warn once per distinct failure rather than once per attempt: a cable that
+    // flaps for a week would otherwise bury every other log line. Repeat every
+    // WARN_REPEAT_ATTEMPTS tries so a long outage still leaves a trail, and
+    // carry the attempt count and elapsed time so one line answers "how bad".
+    function reportFailure (message) {
       const attempt = reconnectAttempts + 1
 
-      if (message === lastWarned) {
+      if (!failingSince) {
+        failingSince = Date.now()
+      }
+
+      if (message === lastWarned && attempt % WARN_REPEAT_ATTEMPTS !== 0) {
         debug('Suppressing repeat failure on attempt #%d: %s', attempt, message)
         return
       }
 
       lastWarned = message
-      node.warn(`${message} (attempt ${attempt}, retrying)`)
+      const seconds = Math.round((Date.now() - failingSince) / 1000)
+      node.warn(`${message} (attempt ${attempt}, failing for ${seconds}s, retrying)`)
     }
 
     // Close a reader without blocking, but keep the handle so node close can
     // wait for it.
     function disposeReader (reader) {
       if (!reader) {
-        return Promise.resolve()
+        return
       }
 
       let settle
@@ -129,20 +142,18 @@ module.exports = function (RED) {
 
       reader.close((err) => {
         if (err) {
-          node.warn(err)
+          reportFailure(`Failed to close serial port: ${err.message || err}`)
         }
         closingReaders.delete(finished)
         settle()
       })
-
-      return finished
     }
 
     // Drop the current connection and open a fresh one after a backoff delay.
     // The pipe chain inside a VEDirect cannot be restarted once its serial
     // stream has ended, so recovery always means building a new one.
     function scheduleReconnect (reason) {
-      if (closed || reconnectTimer) {
+      if (shuttingDown || reconnectTimer) {
         return
       }
 
@@ -169,8 +180,22 @@ module.exports = function (RED) {
       }, delay)
     }
 
+    // Every way a connection can fail ends the same way: say so, show it, retry.
+    function failConnection (message, reason) {
+      reportFailure(message)
+      setConnection(ERROR, { error: message })
+      scheduleReconnect(reason)
+    }
+
+    // A lost link and a silent device are the two commonest field faults, and
+    // both used to retry in complete silence.
+    function loseConnection (message, reason) {
+      reportFailure(message)
+      scheduleReconnect(reason)
+    }
+
     function connect () {
-      if (closed) {
+      if (shuttingDown) {
         return
       }
 
@@ -187,7 +212,7 @@ module.exports = function (RED) {
           return config.port
         })
         .then((resolvedPath) => {
-          if (closed) {
+          if (shuttingDown) {
             return
           }
 
@@ -211,8 +236,10 @@ module.exports = function (RED) {
             // A frame arrived, so this connection works: forget past failures
             // and start the next backoff from scratch.
             if (reconnectAttempts > 0) {
-              node.log(`Receiving data again after ${reconnectAttempts} reconnection attempt(s)`)
+              const seconds = Math.round((Date.now() - failingSince) / 1000)
+              node.log(`Receiving data again after ${reconnectAttempts} attempt(s) over ${seconds}s`)
               reconnectAttempts = 0
+              failingSince = null
               lastWarned = null
             }
 
@@ -235,28 +262,26 @@ module.exports = function (RED) {
 
           reader.on('error', (error) => {
             debug('Error from dataReader: %o', error)
-            reportFailure(error)
-            setConnection(ERROR, { error: error.message || String(error) })
-            scheduleReconnect('error')
+            failConnection(error.message || String(error), REASON_ERROR)
           })
 
           // A disconnect reaches us as 'close', never as 'error'.
           reader.on('close', (info) => {
             debug('Connection closed (disconnected: %s)', info && info.disconnected)
-            scheduleReconnect('close')
+            loseConnection(`Lost the serial connection to ${resolvedPath}`, REASON_CLOSE)
           })
         })
         .catch((err) => {
           debug('Failed to open serial port: %o', err)
-          reportFailure(err)
-          setConnection(ERROR, { error: err.message || String(err) })
-          scheduleReconnect('open failure')
+          failConnection(err.message || String(err), REASON_OPEN_FAILURE)
         })
     }
 
     // Watch for a connection that is open but silent. A VE.Direct device can
     // stop transmitting while the file descriptor stays valid, which produces
-    // no serial event at all, so silence is the only symptom to act on.
+    // no serial event at all, so silence is the only symptom to act on. The
+    // same tick repaints the badge, which is why it runs even when stale
+    // detection is switched off.
     livenessInterval = setInterval(() => {
       // Measure silence from whichever came last, the newest frame or the
       // moment this connection opened. Anchoring on lastDataTime alone would
@@ -265,7 +290,7 @@ module.exports = function (RED) {
       const lastActivity = Math.max(lastDataTime || 0, connectedAt || 0) || null
 
       if (connection.state === CONNECTED && isStale(lastActivity, livenessMs)) {
-        scheduleReconnect('stale data')
+        loseConnection(`No data for ${Math.round(livenessMs / 1000)}s`, REASON_STALE)
         return
       }
 
@@ -302,7 +327,7 @@ module.exports = function (RED) {
 
     node.on('close', function (done) {
       debug('Closing node, clearing timers and closing serial port')
-      closed = true
+      shuttingDown = true
 
       clearInterval(livenessInterval)
       livenessInterval = null

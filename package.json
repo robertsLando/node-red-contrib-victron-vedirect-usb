@@ -55,8 +55,7 @@
     "testEnvironment": "node",
     "coverageDirectory": "./coverage",
     "collectCoverageFrom": [
-      "src/**/*.js",
-      "!src/nodes/**/*.js"
+      "src/**/*.js"
     ],
     "testMatch": [
       "**/test/**/*.test.js"

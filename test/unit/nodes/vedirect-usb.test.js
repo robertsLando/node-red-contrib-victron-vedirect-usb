@@ -5,6 +5,12 @@ const { EventEmitter } = require('events')
 class MockVEDirect extends EventEmitter {
   constructor (path) {
     super()
+
+    if (MockVEDirect.failNextConstruction) {
+      MockVEDirect.failNextConstruction = false
+      throw new Error('Permission denied, cannot open ' + path)
+    }
+
     this.path = path
     this.closeCalls = 0
     this.closeCallback = null
@@ -15,12 +21,13 @@ class MockVEDirect extends EventEmitter {
     this.closeCalls++
     this.closeCallback = callback
     if (!this.holdClose) {
-      process.nextTick(() => callback && callback(null))
+      process.nextTick(() => callback && callback(this.closeError || null))
     }
   }
 }
 
 MockVEDirect.instances = []
+MockVEDirect.failNextConstruction = false
 
 const mockList = jest.fn()
 
@@ -28,8 +35,7 @@ jest.mock('serialport', () => ({ SerialPort: { list: mockList } }))
 jest.mock('../../../src/services/vedirect', () => MockVEDirect)
 
 const registerNode = require('../../../src/nodes/vedirect-usb')
-const { MAX_DELAY_MS } = require('../../../src/lib/reconnect-policy')
-const { DEFAULT_LIVENESS_TIMEOUT_MS } = require('../../../src/lib/stale-detector')
+const { MAX_DELAY_MS, LIVENESS_TIMEOUT_MS } = require('../../../src/lib/reconnect-policy')
 
 // Backoff is jittered, so no test may assume an exact delay. Stepping past the
 // hard cap always lands after whatever delay was picked.
@@ -85,6 +91,7 @@ describe('VEDirectUSB node', () => {
   beforeEach(() => {
     jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] })
     MockVEDirect.instances = []
+    MockVEDirect.failNextConstruction = false
     mockList.mockReset()
     mockList.mockResolvedValue([])
   })
@@ -158,7 +165,7 @@ describe('VEDirectUSB node', () => {
 
     // Go silent so the watchdog reconnects; lastDataTime is now well past the
     // timeout by the time the replacement connection opens.
-    jest.advanceTimersByTime(11000)
+    jest.advanceTimersByTime(LIVENESS_TIMEOUT_MS + 1000)
     jest.advanceTimersByTime(PAST_BACKOFF)
     await settle()
 
@@ -179,7 +186,7 @@ describe('VEDirectUSB node', () => {
   it('should reconnect when an open port goes silent', async () => {
     const node = await connectedNode({ timeout: 10 })
 
-    jest.advanceTimersByTime(11000)
+    jest.advanceTimersByTime(LIVENESS_TIMEOUT_MS + 1000)
 
     expect(lastStatus(node)).toEqual({
       fill: 'yellow',
@@ -198,7 +205,7 @@ describe('VEDirectUSB node', () => {
   it('should supervise liveness even when stale detection is disabled', async () => {
     const node = await connectedNode({ timeout: '' })
 
-    jest.advanceTimersByTime(DEFAULT_LIVENESS_TIMEOUT_MS - 1000)
+    jest.advanceTimersByTime(LIVENESS_TIMEOUT_MS - 1000)
     expect(MockVEDirect.instances).toHaveLength(1)
 
     jest.advanceTimersByTime(2000)
@@ -218,7 +225,7 @@ describe('VEDirectUSB node', () => {
     expect(lastStatus(node)).toEqual({
       fill: 'red',
       shape: 'dot',
-      text: 'Permission denied'
+      text: 'Permission denied (retrying)'
     })
 
     await closeNode(node)
@@ -235,7 +242,7 @@ describe('VEDirectUSB node', () => {
     }
 
     expect(node.warn).toHaveBeenCalledTimes(1)
-    expect(node.warn.mock.calls[0][0]).toMatch(/Permission denied/)
+    expect(node.warn.mock.calls[0][0]).toBe('Permission denied (attempt 1, failing for 0s, retrying)')
 
     await closeNode(node)
   })
@@ -266,7 +273,7 @@ describe('VEDirectUSB node', () => {
     current().emit('data', PID_FRAME)
 
     expect(node.log).toHaveBeenCalledTimes(1)
-    expect(node.log.mock.calls[0][0]).toMatch(/1 reconnection attempt/)
+    expect(node.log.mock.calls[0][0]).toMatch(/1 attempt\(s\) over \d+s/)
 
     // Backoff restarted, so the next retry lands well inside the cap.
     current().emit('close', {})
@@ -377,6 +384,86 @@ describe('VEDirectUSB node', () => {
       shape: 'ring',
       text: 'reconnecting (disconnected)'
     })
+
+    await closeNode(node)
+  })
+
+  it('should retry when the connection cannot even be constructed', async () => {
+    MockVEDirect.failNextConstruction = true
+    const node = buildNode()
+    await settle()
+
+    expect(MockVEDirect.instances).toHaveLength(0)
+    expect(lastStatus(node).fill).toBe('red')
+    expect(lastStatus(node).text).toMatch(/Permission denied.*retrying/)
+    expect(node.warn).toHaveBeenCalledTimes(1)
+
+    jest.advanceTimersByTime(PAST_BACKOFF)
+    await settle()
+
+    expect(MockVEDirect.instances).toHaveLength(1)
+
+    await closeNode(node)
+  })
+
+  it('should warn when a reader fails to close', async () => {
+    const node = await connectedNode()
+    current().closeError = new Error('EIO')
+
+    current().emit('close', { disconnected: true })
+    await settle()
+
+    expect(node.warn.mock.calls.some(([msg]) => /Failed to close serial port: EIO/.test(msg))).toBe(true)
+
+    await closeNode(node)
+  })
+
+  it('should warn about a lost connection, not just show a badge', async () => {
+    const node = await connectedNode()
+
+    current().emit('close', { disconnected: true })
+
+    expect(node.warn).toHaveBeenCalledTimes(1)
+    expect(node.warn.mock.calls[0][0]).toMatch(/Lost the serial connection/)
+
+    await closeNode(node)
+  })
+
+  it('should warn about a silent device', async () => {
+    const node = await connectedNode({ timeout: 10 })
+
+    jest.advanceTimersByTime(LIVENESS_TIMEOUT_MS + 1000)
+
+    expect(node.warn.mock.calls[0][0]).toMatch(/No data for 60s/)
+
+    await closeNode(node)
+  })
+
+  it('should re-warn during a long outage instead of going quiet', async () => {
+    const node = buildNode()
+    await settle()
+
+    for (let i = 0; i < 12; i++) {
+      current().emit('error', new Error('Permission denied'))
+      jest.advanceTimersByTime(PAST_BACKOFF)
+      await settle()
+    }
+
+    expect(node.warn).toHaveBeenCalledTimes(2)
+    expect(node.warn.mock.calls[1][0]).toMatch(/attempt 10, failing for \d+s/)
+
+    await closeNode(node)
+  })
+
+  it('should not let a short output timeout tear down a healthy port', async () => {
+    // A 1 second timeout is a display preference; it must not become a
+    // link-is-dead threshold and kill the port between two frames.
+    const node = await connectedNode({ timeout: 1 })
+
+    jest.advanceTimersByTime(30000)
+
+    expect(MockVEDirect.instances).toHaveLength(1)
+    expect(lastStatus(node)).toEqual({ fill: 'yellow', shape: 'ring', text: 'stale data' })
 
     await closeNode(node)
   })

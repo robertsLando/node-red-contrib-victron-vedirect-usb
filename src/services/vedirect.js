@@ -10,6 +10,13 @@ const debugDelimiter = debug('vedirect:delimiter')
 const debugParser = debug('vedirect:parser')
 const debugOutput = debug('vedirect:output')
 
+// One lifecycle, one field. Four booleans encoded the same thing and allowed
+// combinations that cannot happen.
+const OPENING = 'opening'
+const OPEN = 'open'
+const CLOSING = 'closing'
+const CLOSED = 'closed'
+
 /**
  * One VE.Direct connection: an open serial port plus the pipe chain that turns
  * its bytes into frames. The pipe chain cannot outlive the port (ending the
@@ -27,10 +34,7 @@ class VEDirect extends EventEmitter {
 
     debugSerial('Creating serial port on %s', path)
 
-    this.closed = false
-    this.opening = true
-    this.closing = false
-    this.disposed = false
+    this.state = OPENING
     this.pendingClose = []
 
     this.serial = new SerialPort({
@@ -42,13 +46,20 @@ class VEDirect extends EventEmitter {
 
     this.serial.on('open', () => {
       debugSerial('Serial port opened successfully')
-      this.opening = false
+      if (this.state === OPENING) {
+        this.state = OPEN
+      }
       this.emit('open')
     })
 
     this.serial.on('error', (err) => {
       debugSerial('Serial port error: %o', err)
-      this.opening = false
+      // An error before the port ever opened means there is nothing to close;
+      // leaving the state at OPENING would make close() wait for an 'open'
+      // that can no longer arrive.
+      if (this.state === OPENING) {
+        this.state = CLOSED
+      }
       this.emit('error', err)
     })
 
@@ -110,11 +121,11 @@ class VEDirect extends EventEmitter {
   }
 
   _closed (info) {
-    if (this.closed) {
+    if (this.state === CLOSING || this.state === CLOSED) {
       return
     }
 
-    this.closed = true
+    this.state = CLOSED
     this.emit('close', info)
   }
 
@@ -126,21 +137,21 @@ class VEDirect extends EventEmitter {
   close (callback) {
     const done = callback || (() => {})
 
-    this.closed = true
-
-    if (this.disposed) {
+    if (this.state === CLOSED) {
       return process.nextTick(() => done(null))
     }
 
     // Queue late callers behind an in-flight close. Re-running the teardown
     // would strip the listeners the first close is waiting on, and its
     // callback - which is Node-RED's `done` - would never fire.
-    if (this.closing) {
+    if (this.state === CLOSING) {
       this.pendingClose.push(done)
       return
     }
 
-    this.closing = true
+    const wasOpening = this.state === OPENING
+
+    this.state = CLOSING
     this.pendingClose = [done]
 
     this.serial.unpipe(this.rl)
@@ -150,20 +161,17 @@ class VEDirect extends EventEmitter {
     // Drop our listeners before closing so a late frame, or the close we are
     // about to cause, can't reach an owner that has already moved on.
     this.removeAllListeners()
-    this.serial.removeAllListeners('open')
+    this.serial.removeAllListeners('data')
     this.serial.removeAllListeners('close')
     this.serial.removeAllListeners('end')
-    this.serial.removeAllListeners('error')
-    this.serial.on('error', (err) => debugSerial('Error after close: %o', err))
+    this.detachOpenListeners()
 
     const finish = (err) => {
-      if (err) {
-        debugSerial('Error closing serial port: %o', err)
+      if (this.state === CLOSED) {
+        return
       }
 
-      this.opening = false
-      this.closing = false
-      this.disposed = true
+      this.state = CLOSED
 
       const callbacks = this.pendingClose
       this.pendingClose = []
@@ -172,7 +180,12 @@ class VEDirect extends EventEmitter {
       process.nextTick(() => callbacks.forEach((cb) => cb(err || null)))
     }
 
-    const closePort = () => this.serial.close(finish)
+    const closePort = () => {
+      // Disarm the mid-open pair: a stray error during the close itself must
+      // not settle the caller while the descriptor is still being released.
+      this.detachOpenListeners()
+      this.serial.close(finish)
+    }
 
     if (this.serial.isOpen) {
       return closePort()
@@ -180,7 +193,7 @@ class VEDirect extends EventEmitter {
 
     // Closing mid-open would leave the pending open to succeed unowned, so
     // wait for it to land (or fail) first.
-    if (this.opening) {
+    if (wasOpening) {
       debugSerial('Close requested while still opening')
       this.serial.once('open', closePort)
       this.serial.once('error', finish)
@@ -190,6 +203,17 @@ class VEDirect extends EventEmitter {
     debugSerial('Close requested but port is not open')
     finish(null)
   }
+
+  detachOpenListeners () {
+    this.serial.removeAllListeners('open')
+    this.serial.removeAllListeners('error')
+    this.serial.on('error', (err) => debugSerial('Error after close: %o', err))
+  }
 }
+
+VEDirect.OPENING = OPENING
+VEDirect.OPEN = OPEN
+VEDirect.CLOSING = CLOSING
+VEDirect.CLOSED = CLOSED
 
 module.exports = VEDirect

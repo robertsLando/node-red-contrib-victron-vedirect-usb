@@ -1,5 +1,8 @@
 /**
  * Sample VE.Direct data frames for testing
+ *
+ * Captured from real devices, so each frame keeps the Checksum byte the device
+ * sent. toWireFrame recomputes it rather than trusting the capture.
  */
 
 // SmartShunt sample data

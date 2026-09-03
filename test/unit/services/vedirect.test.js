@@ -167,7 +167,7 @@ describe('VEDirect', () => {
 
   it('should wait for a pending open before closing', (done) => {
     const reader = build()
-    expect(reader.opening).toBe(true)
+    expect(reader.state).toBe(VEDirect.OPENING)
 
     reader.close(() => {
       expect(port.isOpen).toBe(false)
@@ -211,15 +211,45 @@ describe('VEDirect', () => {
     })
   })
 
-  it('should clear opening once a mid-open close settles', (done) => {
+  it('should land on a terminal state once a mid-open close settles', (done) => {
     const reader = build()
 
     reader.close(() => {
-      expect(reader.opening).toBe(false)
+      expect(reader.state).toBe(VEDirect.CLOSED)
       done()
     })
 
     port.open()
+  })
+
+  it('should not settle the caller when the port errors during its close', (done) => {
+    const reader = build()
+    let release
+    port.close = (callback) => { release = () => callback(null) }
+
+    reader.close(() => {
+      expect(port.isOpen).toBe(false)
+      done()
+    })
+
+    port.open()
+    // A stray error while the descriptor is still being released must not
+    // report the close as finished.
+    port.emit('error', new Error('late'))
+    expect(release).toBeDefined()
+
+    port.isOpen = false
+    release()
+  })
+
+  it('should treat a failed open as already closed', (done) => {
+    const reader = build()
+    reader.on('error', () => {})
+
+    port.emit('error', new Error('ENOENT'))
+
+    expect(reader.state).toBe(VEDirect.CLOSED)
+    reader.close(done)
   })
 
   it('should drop a frame that straddles the close', (done) => {

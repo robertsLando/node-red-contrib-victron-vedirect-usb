@@ -152,9 +152,13 @@ Retries back off from 1 second up to 30 seconds, and the port is re-resolved on
 every attempt so a cable that comes back on a different `/dev/ttyUSB*` name is
 still found.
 
-This does not depend on the timeout setting. With stale detection disabled the
-node still watches for a silent port, using a 60 second liveness timeout
-instead of the configured one.
+This does not depend on the timeout setting, and retries never stop. The node
+treats a port as dead after 60 seconds of silence, or after the configured
+timeout if that is longer — the timeout only ever lengthens the window.
+
+Every reconnect is logged: a warning names the failure, repeated once every ten
+attempts with the attempt count and outage duration, and an info line records
+the recovery.
 
 ### Status
 
@@ -164,5 +168,5 @@ instead of the configured one.
 - Yellow ring, "stale data": connected, but no fresh data within the timeout.
 - Yellow ring, "reconnecting (disconnected)": the cable or port went away.
 - Yellow ring, "reconnecting (no data)": the port is open but the device went silent.
-- Red dot with a message: the port could not be opened or reported an error.
+- Red dot with a message and "(retrying)": the port could not be opened or reported an error.
 </script>

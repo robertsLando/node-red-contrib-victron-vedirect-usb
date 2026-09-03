@@ -9,14 +9,19 @@ const CONNECTED = 'connected'
 const RECONNECTING = 'reconnecting'
 const ERROR = 'error'
 
-// Why we gave up on the previous connection, phrased for the status badge.
+// Why the supervisor gave up on the previous connection.
+const REASON_CLOSE = 'close'
+const REASON_STALE = 'stale data'
+const REASON_ERROR = 'error'
+const REASON_OPEN_FAILURE = 'open failure'
+
+// Only the reasons that reach the badge. An error and a failed open show the
+// driver's own message instead, which says more than any wording here could.
 // The operator needs "replug the cable" to look different from "the device
 // went quiet", which a bare "reconnecting" does not tell them.
 const REASON_TEXT = {
-  close: 'disconnected',
-  'stale data': 'no data',
-  error: 'error',
-  'open failure': 'cannot open'
+  [REASON_CLOSE]: 'disconnected',
+  [REASON_STALE]: 'no data'
 }
 
 /**
@@ -37,8 +42,10 @@ const REASON_TEXT = {
 function getStatusDisplay (status) {
   const { state, error, reason, hasData, stale, productName } = status || {}
 
+  // Retries never stop, so an error is never the last word. Saying so keeps a
+  // red badge from reading as terminal.
   if (state === ERROR) {
-    return { fill: 'red', shape: 'dot', text: error || 'error' }
+    return { fill: 'red', shape: 'dot', text: `${error || 'error'} (retrying)` }
   }
 
   if (state === CONNECTING) {
@@ -48,6 +55,11 @@ function getStatusDisplay (status) {
   if (state === RECONNECTING) {
     const why = REASON_TEXT[reason]
     return { fill: 'yellow', shape: 'ring', text: why ? `reconnecting (${why})` : 'reconnecting' }
+  }
+
+  // Anything we don't recognise must not claim the connection is healthy.
+  if (state !== CONNECTED) {
+    return { fill: 'grey', shape: 'ring', text: 'unknown' }
   }
 
   if (!hasData) {
@@ -66,5 +78,9 @@ module.exports = {
   CONNECTING,
   CONNECTED,
   RECONNECTING,
-  ERROR
+  ERROR,
+  REASON_CLOSE,
+  REASON_STALE,
+  REASON_ERROR,
+  REASON_OPEN_FAILURE
 }

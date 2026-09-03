@@ -1,4 +1,4 @@
-const { parseTimeout, isStale, DEFAULT_LIVENESS_TIMEOUT_MS } = require('../../../src/lib/stale-detector')
+const { parseTimeout, isStale } = require('../../../src/lib/stale-detector')
 
 describe('stale-detector', () => {
   describe('parseTimeout', () => {
@@ -92,14 +92,6 @@ describe('stale-detector', () => {
     test('should use Date.now() when currentTime not provided', () => {
       const lastDataTime = Date.now() - 5000
       expect(isStale(lastDataTime, TEN_SECONDS)).toBe(false)
-    })
-  })
-
-  describe('DEFAULT_LIVENESS_TIMEOUT_MS', () => {
-    it('should be long enough to outlast normal frame spacing', () => {
-      // Devices send about one frame per second; anything under a few seconds
-      // would tear down a healthy connection.
-      expect(DEFAULT_LIVENESS_TIMEOUT_MS).toBeGreaterThan(5000)
     })
   })
 })

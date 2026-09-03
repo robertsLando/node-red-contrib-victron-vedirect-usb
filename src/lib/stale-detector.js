@@ -3,12 +3,6 @@
  * Pure functions for detecting when data becomes stale based on timeout configuration
  */
 
-// Used to supervise the connection when stale detection is switched off. A
-// healthy VE.Direct device sends a frame about every second, so a minute of
-// silence means the link is dead even if the port still looks open, and the
-// node would otherwise sit there forever with no detector at all.
-const DEFAULT_LIVENESS_TIMEOUT_MS = 60000
-
 /**
  * Parse timeout configuration value
  * @param {*} configValue - The timeout value from node configuration
@@ -51,6 +45,5 @@ function isStale (lastDataTime, timeoutMs, currentTime = Date.now()) {
 
 module.exports = {
   parseTimeout,
-  isStale,
-  DEFAULT_LIVENESS_TIMEOUT_MS
+  isStale
 }

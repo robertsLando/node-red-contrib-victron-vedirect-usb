@@ -20,7 +20,7 @@ describe('connection-status', () => {
       })).toEqual({
         fill: 'red',
         shape: 'dot',
-        text: 'Permission denied, cannot open /dev/ttyUSB0'
+        text: 'Permission denied, cannot open /dev/ttyUSB0 (retrying)'
       })
     })
 
@@ -28,7 +28,7 @@ describe('connection-status', () => {
       expect(getStatusDisplay({ state: ERROR })).toEqual({
         fill: 'red',
         shape: 'dot',
-        text: 'error'
+        text: 'error (retrying)'
       })
     })
 
@@ -119,14 +119,12 @@ describe('connection-status', () => {
       })
     })
 
-    it('should not throw on a missing or unknown state', () => {
-      expect(getStatusDisplay()).toEqual({ fill: 'yellow', shape: 'ring', text: 'waiting for data' })
-      expect(getStatusDisplay(null)).toEqual({ fill: 'yellow', shape: 'ring', text: 'waiting for data' })
-      expect(getStatusDisplay({ state: 'nonsense', hasData: true })).toEqual({
-        fill: 'green',
-        shape: 'dot',
-        text: 'connected'
-      })
+    it('should not claim health for a missing or unknown state', () => {
+      const unknown = { fill: 'grey', shape: 'ring', text: 'unknown' }
+
+      expect(getStatusDisplay()).toEqual(unknown)
+      expect(getStatusDisplay(null)).toEqual(unknown)
+      expect(getStatusDisplay({ state: 'nonsense', hasData: true, productName: 'BMV-700' })).toEqual(unknown)
     })
   })
 })
