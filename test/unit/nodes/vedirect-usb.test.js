@@ -812,4 +812,28 @@ describe('VEDirectUSB node', () => {
 
     await closeNode(node)
   })
+
+  // The driver reports a close on nextTick, which runs before the race's own
+  // continuation, so the last reader can settle on the deadline itself. Warning
+  // then named nobody at all: "Gave up waiting for  to close".
+  it('should not claim it gave up when the close lands on the deadline', async () => {
+    const node = await connectedNode()
+    const reader = current()
+    reader.holdClose = true
+
+    let done = false
+    const closing = new Promise((resolve) => {
+      node.emit('close', () => { done = true; resolve() })
+    })
+    await settle()
+
+    // Fire the deadline, then let the close land in the same turn.
+    jest.advanceTimersByTime(CLOSE_TIMEOUT_MS)
+    reader.closeCallback(null)
+
+    await closing
+
+    expect(done).toBe(true)
+    expect(node.warn.mock.calls.some(([msg]) => /Gave up waiting/.test(msg))).toBe(false)
+  })
 })

@@ -403,10 +403,14 @@ module.exports = function (RED) {
       Promise.race([closed.then(() => false), gaveUp]).then((timedOut) => {
         clearTimeout(closeTimer)
 
-        if (timedOut) {
-          // Name what is actually stuck, which is whatever has not settled.
-          const stuck = [...closingReaders].map((pending) => pending.heldPath).join(', ')
-          node.warn(`Gave up waiting for ${stuck} to close`)
+        // Name what is actually stuck, which is whatever has not settled. The
+        // set can empty on the deadline itself - the driver reports its close
+        // on nextTick, which runs before this continuation - and then nothing
+        // is stuck and there is nothing to report.
+        const stuck = [...closingReaders].map((pending) => pending.heldPath)
+
+        if (timedOut && stuck.length > 0) {
+          node.warn(`Gave up waiting for ${stuck.join(', ')} to close`)
         }
 
         done()
