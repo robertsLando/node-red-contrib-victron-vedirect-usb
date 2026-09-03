@@ -90,7 +90,7 @@ questions.
 | Yellow ring, "stale data" | Connected, but no data within the timeout |
 | Yellow ring, "reconnecting (disconnected)" | The cable or port went away; waiting to retry |
 | Yellow ring, "reconnecting (no data)" | The port is open but the device went silent; waiting to retry |
-| Red dot, "retrying: <message>" | The port could not be opened or reported an error |
+| Red dot, `retrying: <message>` | The port could not be opened or reported an error |
 
 ## Development
 

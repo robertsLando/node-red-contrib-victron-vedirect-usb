@@ -84,6 +84,12 @@ describe('reconnect-policy', () => {
       expect(nextWarnGap(NaN)).toBe(BASE_WARN_GAP_MS)
     })
 
+    it('should follow a doubling sequence up to the cap', () => {
+      const gaps = [0, 1, 2, 3, 4, 5, 6, 7].map((count) => nextWarnGap(count))
+
+      expect(gaps).toEqual([60000, 120000, 240000, 480000, 960000, 1920000, 3600000, 3600000])
+    })
+
     it('should keep a day-long outage to a readable number of lines', () => {
       let elapsed = 0
       let warnings = 0
@@ -93,7 +99,8 @@ describe('reconnect-policy', () => {
         warnings++
       }
 
-      expect(warnings).toBeLessThan(30)
+      // Six lines in the first hour, hourly after that.
+      expect(warnings).toBe(29)
     })
   })
 })

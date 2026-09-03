@@ -156,7 +156,9 @@ class VEDirect extends EventEmitter {
       return
     }
 
-    const wasOpening = this.state === OPENING
+    // Ask the driver too: our own state can be LOST while its open is still
+    // in flight, and an unowned open would hold the descriptor.
+    const wasOpening = this.state === OPENING || this.serial.opening
 
     this.state = CLOSING
     this.pendingClose = [done]
@@ -179,6 +181,8 @@ class VEDirect extends EventEmitter {
       }
 
       this.state = CLOSED
+      this.detachOpenListeners()
+      this.serial.removeAllListeners('close')
 
       const callbacks = this.pendingClose
       this.pendingClose = []
@@ -209,11 +213,14 @@ class VEDirect extends EventEmitter {
     }
 
     // The driver flips `closing` before it awaits the fd release, so a
-    // disconnect caught mid-teardown reads as shut but is not. Waiting for its
-    // 'close' is the only way to avoid telling our caller the fd is free.
+    // disconnect caught mid-teardown reads as shut but is not. Wait for it to
+    // land rather than telling our caller the fd is free - on either outcome:
+    // a close it started itself reports failure as 'error' and never emits
+    // 'close' at all, and waiting only for the latter would hang forever.
     if (this.serial.closing) {
       debugSerial('Close requested while the driver is already closing')
       this.serial.once('close', () => finish(null))
+      this.serial.once('error', (err) => finish(err))
       return
     }
 

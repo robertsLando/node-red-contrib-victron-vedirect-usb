@@ -24,6 +24,9 @@ module.exports = function (RED) {
   // status badge tracks reality, cheap enough to run forever.
   const LIVENESS_CHECK_INTERVAL_MS = 1000
 
+  // How long a connection must keep delivering before an outage counts as over.
+  const STEADY_MS = 60000
+
   // /dev/serial/by-id/... symlinks are maintained by udev on Linux and stay
   // pointing at the same physical device across reboots/replugs, unlike
   // /dev/ttyUSB* device names which can swap around. Where available, attach
@@ -72,10 +75,14 @@ module.exports = function (RED) {
     let reconnectTimer = null
     let reconnectAttempts = 0
     let failingSince = null
+    let steadySince = null
     let currentPath = config.port
 
     // One throttle per fault class, so a noisy outage can't swallow the first
     // report of a different problem.
+    const CONNECTION_CHANNEL = 'connection'
+    const CLOSE_CHANNEL = 'close'
+    const RECOVERY_CHANNEL = 'recovery'
     const warnChannels = {}
     let connection = {}
 
@@ -112,7 +119,7 @@ module.exports = function (RED) {
     // hour. A cable that flaps for a week would otherwise bury every other log
     // line, and the operator can act on the first line just as well as the
     // four-hundredth.
-    function warnThrottled (channel, build) {
+    function sayThrottled (channel, say, build) {
       const now = Date.now()
       const state = warnChannels[channel] || (warnChannels[channel] = { at: null, count: 0 })
 
@@ -123,7 +130,29 @@ module.exports = function (RED) {
 
       state.at = now
       state.count++
-      node.warn(build())
+      say(build())
+    }
+
+    function warnThrottled (channel, build) {
+      sayThrottled(channel, (message) => node.warn(message), build)
+    }
+
+    function resetWarnChannel (channel) {
+      delete warnChannels[channel]
+    }
+
+    function describeDuration (ms) {
+      const seconds = Math.round(ms / 1000)
+
+      if (seconds < 120) {
+        return `${seconds}s`
+      }
+
+      if (seconds < 7200) {
+        return `${Math.round(seconds / 60)}m`
+      }
+
+      return `${Math.round(seconds / 3600)}h`
     }
 
     function reportFailure (message) {
@@ -131,9 +160,9 @@ module.exports = function (RED) {
         failingSince = Date.now()
       }
 
-      warnThrottled('connection', () => {
-        const seconds = Math.round((Date.now() - failingSince) / 1000)
-        return `${message} on ${currentPath} (attempt ${reconnectAttempts + 1}, failing for ${seconds}s, retrying)`
+      warnThrottled(CONNECTION_CHANNEL, () => {
+        const failingFor = describeDuration(Date.now() - failingSince)
+        return `${message} on ${currentPath} (attempt ${reconnectAttempts + 1}, failing for ${failingFor}, retrying)`
       })
     }
 
@@ -148,10 +177,18 @@ module.exports = function (RED) {
       const finished = new Promise((resolve) => { settle = resolve })
       closingReaders.add(finished)
 
+      // Name the port this reader held, not whichever one the next attempt has
+      // since resolved to.
+      const path = currentPath
+
       reader.close((err) => {
         if (err) {
           // Not a connection failure, and during shutdown nothing retries.
-          warnThrottled('close', () => `Failed to close ${currentPath}: ${err.message || err}`)
+          warnThrottled(CLOSE_CHANNEL, () => `Failed to close ${path}: ${err.message || err}`)
+        } else {
+          // A clean teardown ends this run of close trouble, so the next one
+          // is reported at once rather than under an hour-wide quiet period.
+          resetWarnChannel(CLOSE_CHANNEL)
         }
         closingReaders.delete(finished)
         settle()
@@ -178,6 +215,7 @@ module.exports = function (RED) {
       }
 
       connectedAt = null
+      steadySince = null
 
       const reader = dataReader
       dataReader = null
@@ -248,11 +286,21 @@ module.exports = function (RED) {
             // A frame arrived, so this connection works: forget past failures
             // and start the next backoff from scratch.
             if (reconnectAttempts > 0) {
-              const seconds = Math.round((Date.now() - failingSince) / 1000)
-              node.log(`Receiving data again on ${currentPath} after ${reconnectAttempts} attempt(s) over ${seconds}s`)
+              // One frame is not recovery. A cable that flaps every few
+              // seconds delivers a frame per cycle, and treating that as
+              // recovered would clear the throttle on every flap - the exact
+              // log storm the throttle exists to prevent. Announce it under
+              // the same widening interval, and only clear the connection
+              // throttle once the link has held (see the liveness tick).
+              const attempts = reconnectAttempts
+              const outage = describeDuration(Date.now() - failingSince)
+
+              sayThrottled(RECOVERY_CHANNEL, (message) => node.log(message),
+                () => `Receiving data again on ${currentPath} after ${attempts} attempt(s) over ${outage}`)
+
               reconnectAttempts = 0
               failingSince = null
-              delete warnChannels.connection
+              steadySince = Date.now()
             }
 
             debug('Received data event #%d at %d', dataEventCount, lastDataTime)
@@ -302,8 +350,17 @@ module.exports = function (RED) {
       const lastActivity = Math.max(lastDataTime || 0, connectedAt || 0) || null
 
       if (connection.state === CONNECTED && isStale(lastActivity, livenessMs)) {
-        connectionDropped(`No data for ${Math.round(livenessMs / 1000)}s`, REASON_STALE)
+        steadySince = null
+        connectionDropped(`No data for ${describeDuration(livenessMs)}`, REASON_STALE)
         return
+      }
+
+      // The link has held long enough to call it recovered, so the next outage
+      // gets reported at once instead of inheriting this one's quiet period.
+      if (steadySince && Date.now() - steadySince >= STEADY_MS) {
+        steadySince = null
+        resetWarnChannel(CONNECTION_CHANNEL)
+        resetWarnChannel(RECOVERY_CHANNEL)
       }
 
       updateStatus()

@@ -143,6 +143,26 @@ describe('VEDirect', () => {
     })
   })
 
+  // A close the driver started itself reports failure by emitting 'error' and
+  // never emits 'close' at all, so waiting only for 'close' hangs forever and
+  // takes Node-RED's shutdown with it.
+  it('should settle when a close the driver started fails', (done) => {
+    const reader = build()
+    port.open()
+    port.beginSlowClose()
+
+    reader.close((err) => {
+      expect(err.message).toBe('EIO')
+      expect(reader.state).toBe(VEDirect.CLOSED)
+      done()
+    })
+
+    setImmediate(() => {
+      port.closing = false
+      port.emit('error', new Error('EIO'))
+    })
+  })
+
   it('should settle a mid-open close when the open fails instead', (done) => {
     const reader = build()
 

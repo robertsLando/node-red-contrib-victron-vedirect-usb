@@ -507,10 +507,11 @@ describe('VEDirectUSB node', () => {
       current().emit('error', new Error('Permission denied'))
     }
 
-    // Doubling to a one hour ceiling: a handful of lines, not one per retry.
+    // Doubling to a one hour ceiling gives 29 lines. The bounds are wide on
+    // purpose: warning per attempt would give 1441, and doubling with no
+    // ceiling would give about 11.
     expect(node.warn.mock.calls.length).toBeLessThan(40)
     expect(node.warn.mock.calls.length).toBeGreaterThan(20)
-    expect(MAX_WARN_GAP_MS).toBe(3600000)
 
     await closeNode(node)
   })
@@ -524,6 +525,99 @@ describe('VEDirectUSB node', () => {
 
     expect(MockVEDirect.instances).toHaveLength(1)
     expect(lastStatus(node)).toEqual({ fill: 'yellow', shape: 'ring', text: 'stale data' })
+
+    await closeNode(node)
+  })
+
+  it('should report a fresh outage at once after the link has held', async () => {
+    const node = await connectedNode()
+
+    // Drag the outage out until the quiet period has widened to its one hour
+    // ceiling, far past the time the link will later be held for.
+    current().emit('close', { disconnected: true })
+    for (let i = 0; i < 7; i++) {
+      jest.advanceTimersByTime(MAX_WARN_GAP_MS + 1000)
+      await settle()
+      current().emit('error', new Error('No such file or directory'))
+    }
+
+    const duringOutage = node.warn.mock.calls.length
+    expect(duringOutage).toBe(8)
+
+    jest.advanceTimersByTime(PAST_BACKOFF)
+    await settle()
+    current().emit('open')
+    current().emit('data', PID_FRAME)
+
+    // Hold the link long enough to count as recovered, but for far less than
+    // the quiet period the outage had grown to.
+    for (let i = 0; i < 70; i++) {
+      jest.advanceTimersByTime(1000)
+      current().emit('data', PID_FRAME)
+    }
+
+    current().emit('close', { disconnected: true })
+
+    expect(node.warn).toHaveBeenCalledTimes(duringOutage + 1)
+
+    await closeNode(node)
+  })
+
+  // A cable that flaps every few seconds delivers a frame per cycle. Treating
+  // one frame as recovery cleared the throttle on every flap, which is the log
+  // storm the throttle exists to prevent.
+  it('should stay quiet through a cable that flaps every few seconds', async () => {
+    const node = await connectedNode()
+
+    for (let i = 0; i < 20; i++) {
+      current().emit('close', { disconnected: true })
+      jest.advanceTimersByTime(PAST_BACKOFF)
+      await settle()
+      current().emit('open')
+      current().emit('data', PID_FRAME)
+      jest.advanceTimersByTime(5000)
+    }
+
+    // Twenty flaps over about ten minutes: a few lines, not forty.
+    expect(node.warn.mock.calls.length).toBeLessThanOrEqual(5)
+    expect(node.log.mock.calls.length).toBeLessThanOrEqual(5)
+
+    await closeNode(node)
+  })
+
+  it('should report a long outage in minutes rather than seconds', async () => {
+    const node = buildNode()
+    await settle()
+
+    current().emit('error', new Error('Permission denied'))
+
+    jest.advanceTimersByTime(10 * 60 * 1000)
+    await settle()
+    current().emit('error', new Error('Permission denied'))
+
+    expect(node.warn.mock.calls[1][0]).toMatch(/failing for 10m/)
+
+    await closeNode(node)
+  })
+
+  it('should name the port a failing close belonged to', async () => {
+    const node = buildNode({ port: '/dev/ttyUSB0', serialNumber: 'HQ2123ABCDE' })
+    mockList.mockResolvedValue([{ path: '/dev/ttyUSB0', serialNumber: 'HQ2123ABCDE' }])
+    await settle()
+    current().emit('open')
+
+    const reader = current()
+    reader.holdClose = true
+    reader.emit('close', { disconnected: true })
+
+    // The cable comes back on another name before the old close finishes.
+    mockList.mockResolvedValue([{ path: '/dev/ttyUSB3', serialNumber: 'HQ2123ABCDE' }])
+    jest.advanceTimersByTime(PAST_BACKOFF)
+    await settle()
+    reader.closeCallback(new Error('EIO'))
+    await settle()
+
+    expect(node.warn.mock.calls.some(([msg]) => /Failed to close \/dev\/ttyUSB0: EIO/.test(msg))).toBe(true)
 
     await closeNode(node)
   })
