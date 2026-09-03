@@ -17,16 +17,12 @@ module.exports = function (RED) {
     REASON_OPEN_FAILURE
   } = require('../lib/connection-status')
   const { resolveSerialPort } = require('../lib/port-resolver')
-  const { nextDelay, LIVENESS_TIMEOUT_MS } = require('../lib/reconnect-policy')
+  const { nextDelay, nextWarnGap, LIVENESS_TIMEOUT_MS } = require('../lib/reconnect-policy')
   const debug = require('debug')('vedirect:node')
 
   // How often the supervisor looks at the connection. Frequent enough that the
   // status badge tracks reality, cheap enough to run forever.
   const LIVENESS_CHECK_INTERVAL_MS = 1000
-
-  // Re-warn every this many attempts during a long outage, so the log shows an
-  // outage is ongoing without one line per retry.
-  const WARN_REPEAT_ATTEMPTS = 10
 
   // /dev/serial/by-id/... symlinks are maintained by udev on Linux and stay
   // pointing at the same physical device across reboots/replugs, unlike
@@ -76,7 +72,11 @@ module.exports = function (RED) {
     let reconnectTimer = null
     let reconnectAttempts = 0
     let failingSince = null
-    let lastWarned = null
+    let currentPath = config.port
+
+    // One throttle per fault class, so a noisy outage can't swallow the first
+    // report of a different problem.
+    const warnChannels = {}
     let connection = {}
 
     // Readers whose close() is still in flight. Node-RED must not report the
@@ -108,25 +108,33 @@ module.exports = function (RED) {
       updateStatus()
     }
 
-    // Warn once per distinct failure rather than once per attempt: a cable that
-    // flaps for a week would otherwise bury every other log line. Repeat every
-    // WARN_REPEAT_ATTEMPTS tries so a long outage still leaves a trail, and
-    // carry the attempt count and elapsed time so one line answers "how bad".
-    function reportFailure (message) {
-      const attempt = reconnectAttempts + 1
+    // One voice per outage: warn immediately, then back off from a minute to an
+    // hour. A cable that flaps for a week would otherwise bury every other log
+    // line, and the operator can act on the first line just as well as the
+    // four-hundredth.
+    function warnThrottled (channel, build) {
+      const now = Date.now()
+      const state = warnChannels[channel] || (warnChannels[channel] = { at: null, count: 0 })
 
+      if (state.at !== null && now - state.at < nextWarnGap(state.count - 1)) {
+        debug('Staying quiet about an ongoing %s problem', channel)
+        return
+      }
+
+      state.at = now
+      state.count++
+      node.warn(build())
+    }
+
+    function reportFailure (message) {
       if (!failingSince) {
         failingSince = Date.now()
       }
 
-      if (message === lastWarned && attempt % WARN_REPEAT_ATTEMPTS !== 0) {
-        debug('Suppressing repeat failure on attempt #%d: %s', attempt, message)
-        return
-      }
-
-      lastWarned = message
-      const seconds = Math.round((Date.now() - failingSince) / 1000)
-      node.warn(`${message} (attempt ${attempt}, failing for ${seconds}s, retrying)`)
+      warnThrottled('connection', () => {
+        const seconds = Math.round((Date.now() - failingSince) / 1000)
+        return `${message} on ${currentPath} (attempt ${reconnectAttempts + 1}, failing for ${seconds}s, retrying)`
+      })
     }
 
     // Close a reader without blocking, but keep the handle so node close can
@@ -142,7 +150,8 @@ module.exports = function (RED) {
 
       reader.close((err) => {
         if (err) {
-          reportFailure(`Failed to close serial port: ${err.message || err}`)
+          // Not a connection failure, and during shutdown nothing retries.
+          warnThrottled('close', () => `Failed to close ${currentPath}: ${err.message || err}`)
         }
         closingReaders.delete(finished)
         settle()
@@ -180,16 +189,17 @@ module.exports = function (RED) {
       }, delay)
     }
 
-    // Every way a connection can fail ends the same way: say so, show it, retry.
-    function failConnection (message, reason) {
+    // The driver told us why, so show its words on the badge.
+    function connectionErrored (message, reason) {
       reportFailure(message)
       setConnection(ERROR, { error: message })
       scheduleReconnect(reason)
     }
 
-    // A lost link and a silent device are the two commonest field faults, and
-    // both used to retry in complete silence.
-    function loseConnection (message, reason) {
+    // The link just went away, with no driver message to show. A lost cable and
+    // a silent device are the two commonest field faults, and both used to
+    // retry in complete silence.
+    function connectionDropped (message, reason) {
       reportFailure(message)
       scheduleReconnect(reason)
     }
@@ -220,6 +230,8 @@ module.exports = function (RED) {
             debug('Resolved serial number %s to %s (configured path was %s)', config.serialNumber, resolvedPath, config.port)
           }
 
+          currentPath = resolvedPath
+
           const reader = new VEDirect(resolvedPath)
           dataReader = reader
 
@@ -237,10 +249,10 @@ module.exports = function (RED) {
             // and start the next backoff from scratch.
             if (reconnectAttempts > 0) {
               const seconds = Math.round((Date.now() - failingSince) / 1000)
-              node.log(`Receiving data again after ${reconnectAttempts} attempt(s) over ${seconds}s`)
+              node.log(`Receiving data again on ${currentPath} after ${reconnectAttempts} attempt(s) over ${seconds}s`)
               reconnectAttempts = 0
               failingSince = null
-              lastWarned = null
+              delete warnChannels.connection
             }
 
             debug('Received data event #%d at %d', dataEventCount, lastDataTime)
@@ -262,18 +274,18 @@ module.exports = function (RED) {
 
           reader.on('error', (error) => {
             debug('Error from dataReader: %o', error)
-            failConnection(error.message || String(error), REASON_ERROR)
+            connectionErrored(error.message || String(error), REASON_ERROR)
           })
 
           // A disconnect reaches us as 'close', never as 'error'.
           reader.on('close', (info) => {
             debug('Connection closed (disconnected: %s)', info && info.disconnected)
-            loseConnection(`Lost the serial connection to ${resolvedPath}`, REASON_CLOSE)
+            connectionDropped('Lost the serial connection', REASON_CLOSE)
           })
         })
         .catch((err) => {
           debug('Failed to open serial port: %o', err)
-          failConnection(err.message || String(err), REASON_OPEN_FAILURE)
+          connectionErrored(err.message || String(err), REASON_OPEN_FAILURE)
         })
     }
 
@@ -290,7 +302,7 @@ module.exports = function (RED) {
       const lastActivity = Math.max(lastDataTime || 0, connectedAt || 0) || null
 
       if (connection.state === CONNECTED && isStale(lastActivity, livenessMs)) {
-        loseConnection(`No data for ${Math.round(livenessMs / 1000)}s`, REASON_STALE)
+        connectionDropped(`No data for ${Math.round(livenessMs / 1000)}s`, REASON_STALE)
         return
       }
 

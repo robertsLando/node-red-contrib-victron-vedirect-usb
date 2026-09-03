@@ -64,12 +64,15 @@ reconnects when:
 
 - the device is unplugged or the driver resets the port
 - the port cannot be opened, or opening fails with an error
-- the port stays open but sends nothing for the configured timeout
+- the port stays open but sends nothing (see the window below)
 
 Retries back off exponentially from 1 second up to 30 seconds, and the port is
 re-resolved on every attempt, so a cable that comes back on a different
 `/dev/ttyUSB*` name is still found. The backoff resets as soon as a frame
-arrives, and a repeated failure is logged once rather than once per attempt.
+arrives. An ongoing outage is logged once, then again on a widening interval
+from one minute out to one hour, so a week of flapping stays readable. Each
+line names the port, the attempt count and how long the outage has lasted, and
+a recovery line records the return.
 
 Supervision does not depend on the timeout setting, and retries never stop. The
 node treats a port as dead after 60 seconds of silence, or after the configured
@@ -87,11 +90,7 @@ questions.
 | Yellow ring, "stale data" | Connected, but no data within the timeout |
 | Yellow ring, "reconnecting (disconnected)" | The cable or port went away; waiting to retry |
 | Yellow ring, "reconnecting (no data)" | The port is open but the device went silent; waiting to retry |
-| Red dot, error message + "(retrying)" | The port could not be opened or reported an error |
-
-Every reconnect is logged: a warning names the failure, repeated once every ten
-attempts with the attempt count and how long the outage has lasted, and an info
-line records the recovery.
+| Red dot, "retrying: <message>" | The port could not be opened or reported an error |
 
 ## Development
 

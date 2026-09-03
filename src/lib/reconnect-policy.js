@@ -10,6 +10,13 @@
 // which is a different question from the configured output-staleness timeout.
 const LIVENESS_TIMEOUT_MS = 60000
 
+// How long to stay quiet between warnings about an ongoing outage. Dedup on
+// the message text alone does not work: a dead cable alternates between "lost
+// the connection" and "cannot open", so every retry looks new. Doubling from a
+// minute to an hour keeps a month-long outage to a readable trail.
+const BASE_WARN_GAP_MS = 60000
+const MAX_WARN_GAP_MS = 3600000
+
 const BASE_DELAY_MS = 1000
 const MAX_DELAY_MS = 30000
 const JITTER_RATIO = 0.2
@@ -32,8 +39,22 @@ function nextDelay (attempt, random = Math.random) {
   return Math.min(MAX_DELAY_MS, Math.round(base + jitter))
 }
 
+/**
+ * Quiet period before warning again about an outage that is still going.
+ * @param {number} warnCount - Warnings already emitted for this outage
+ * @returns {number} Gap in milliseconds
+ */
+function nextWarnGap (warnCount) {
+  const exponent = Math.max(0, Math.floor(warnCount) || 0)
+
+  return Math.min(BASE_WARN_GAP_MS * Math.pow(2, exponent), MAX_WARN_GAP_MS)
+}
+
 module.exports = {
   nextDelay,
+  nextWarnGap,
+  BASE_WARN_GAP_MS,
+  MAX_WARN_GAP_MS,
   LIVENESS_TIMEOUT_MS,
   BASE_DELAY_MS,
   MAX_DELAY_MS

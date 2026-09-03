@@ -35,7 +35,12 @@ jest.mock('serialport', () => ({ SerialPort: { list: mockList } }))
 jest.mock('../../../src/services/vedirect', () => MockVEDirect)
 
 const registerNode = require('../../../src/nodes/vedirect-usb')
-const { MAX_DELAY_MS, LIVENESS_TIMEOUT_MS } = require('../../../src/lib/reconnect-policy')
+const {
+  MAX_DELAY_MS,
+  LIVENESS_TIMEOUT_MS,
+  BASE_WARN_GAP_MS,
+  MAX_WARN_GAP_MS
+} = require('../../../src/lib/reconnect-policy')
 
 // Backoff is jittered, so no test may assume an exact delay. Stepping past the
 // hard cap always lands after whatever delay was picked.
@@ -225,38 +230,90 @@ describe('VEDirectUSB node', () => {
     expect(lastStatus(node)).toEqual({
       fill: 'red',
       shape: 'dot',
-      text: 'Permission denied (retrying)'
+      text: 'retrying: Permission denied'
     })
 
     await closeNode(node)
   })
 
-  it('should warn once per distinct failure, not once per attempt', async () => {
-    const node = buildNode()
-    await settle()
-
-    for (let i = 0; i < 4; i++) {
-      current().emit('error', new Error('Permission denied'))
-      jest.advanceTimersByTime(PAST_BACKOFF)
-      await settle()
-    }
-
-    expect(node.warn).toHaveBeenCalledTimes(1)
-    expect(node.warn.mock.calls[0][0]).toBe('Permission denied (attempt 1, failing for 0s, retrying)')
-
-    await closeNode(node)
-  })
-
-  it('should warn again when the failure changes', async () => {
+  it('should warn once at the start of an outage, not once per attempt', async () => {
     const node = buildNode()
     await settle()
 
     current().emit('error', new Error('Permission denied'))
-    jest.advanceTimersByTime(PAST_BACKOFF)
+
+    expect(node.warn).toHaveBeenCalledTimes(1)
+    expect(node.warn.mock.calls[0][0])
+      .toBe('Permission denied on /dev/ttyUSB0 (attempt 1, failing for 0s, retrying)')
+
+    // Retries inside the first quiet period add nothing. Ten seconds a step
+    // outruns the early backoff without reaching BASE_WARN_GAP_MS.
+    for (let i = 0; i < 4; i++) {
+      jest.advanceTimersByTime(10000)
+      await settle()
+      current().emit('error', new Error('Permission denied'))
+    }
+
+    expect(node.warn).toHaveBeenCalledTimes(1)
+
+    await closeNode(node)
+  })
+
+  // A dead cable alternates between "lost the connection" and the driver's
+  // open failure, so dedup on the message text alone warned on every retry.
+  it('should stay quiet when the failure alternates between two messages', async () => {
+    const node = await connectedNode()
+
+    for (let i = 0; i < 6; i++) {
+      current().emit('close', { disconnected: true })
+      jest.advanceTimersByTime(10000)
+      await settle()
+      current().emit('error', new Error('No such file or directory'))
+      jest.advanceTimersByTime(10000)
+      await settle()
+    }
+
+    // Twelve failures over two minutes: a couple of lines, not twelve.
+    expect(node.warn.mock.calls.length).toBeLessThanOrEqual(3)
+
+    await closeNode(node)
+  })
+
+  it('should speak up again once the quiet period has passed', async () => {
+    const node = buildNode()
     await settle()
-    current().emit('error', new Error('No such file or directory'))
+
+    current().emit('error', new Error('Permission denied'))
+    expect(node.warn).toHaveBeenCalledTimes(1)
+
+    jest.advanceTimersByTime(BASE_WARN_GAP_MS + 1000)
+    await settle()
+    current().emit('error', new Error('Permission denied'))
 
     expect(node.warn).toHaveBeenCalledTimes(2)
+    expect(node.warn.mock.calls[1][0]).toMatch(/failing for 6[0-9]s/)
+
+    await closeNode(node)
+  })
+
+  it('should back the quiet period off towards the maximum', async () => {
+    const node = buildNode()
+    await settle()
+
+    current().emit('error', new Error('Permission denied'))
+
+    // Second warning needs one gap, the third needs twice that.
+    jest.advanceTimersByTime(BASE_WARN_GAP_MS + 1000)
+    current().emit('error', new Error('Permission denied'))
+    expect(node.warn).toHaveBeenCalledTimes(2)
+
+    jest.advanceTimersByTime(BASE_WARN_GAP_MS + 1000)
+    current().emit('error', new Error('Permission denied'))
+    expect(node.warn).toHaveBeenCalledTimes(2)
+
+    jest.advanceTimersByTime(BASE_WARN_GAP_MS + 1000)
+    current().emit('error', new Error('Permission denied'))
+    expect(node.warn).toHaveBeenCalledTimes(3)
 
     await closeNode(node)
   })
@@ -273,7 +330,7 @@ describe('VEDirectUSB node', () => {
     current().emit('data', PID_FRAME)
 
     expect(node.log).toHaveBeenCalledTimes(1)
-    expect(node.log.mock.calls[0][0]).toMatch(/1 attempt\(s\) over \d+s/)
+    expect(node.log.mock.calls[0][0]).toMatch(/on \/dev\/ttyUSB0 after 1 attempt\(s\) over \d+s/)
 
     // Backoff restarted, so the next retry lands well inside the cap.
     current().emit('close', {})
@@ -395,7 +452,7 @@ describe('VEDirectUSB node', () => {
 
     expect(MockVEDirect.instances).toHaveLength(0)
     expect(lastStatus(node).fill).toBe('red')
-    expect(lastStatus(node).text).toMatch(/Permission denied.*retrying/)
+    expect(lastStatus(node).text).toMatch(/^retrying: Permission denied/)
     expect(node.warn).toHaveBeenCalledTimes(1)
 
     jest.advanceTimersByTime(PAST_BACKOFF)
@@ -413,7 +470,7 @@ describe('VEDirectUSB node', () => {
     current().emit('close', { disconnected: true })
     await settle()
 
-    expect(node.warn.mock.calls.some(([msg]) => /Failed to close serial port: EIO/.test(msg))).toBe(true)
+    expect(node.warn.mock.calls.some(([msg]) => /Failed to close \/dev\/ttyUSB0: EIO/.test(msg))).toBe(true)
 
     await closeNode(node)
   })
@@ -424,7 +481,7 @@ describe('VEDirectUSB node', () => {
     current().emit('close', { disconnected: true })
 
     expect(node.warn).toHaveBeenCalledTimes(1)
-    expect(node.warn.mock.calls[0][0]).toMatch(/Lost the serial connection/)
+    expect(node.warn.mock.calls[0][0]).toMatch(/Lost the serial connection on \/dev\/ttyUSB0/)
 
     await closeNode(node)
   })
@@ -439,18 +496,21 @@ describe('VEDirectUSB node', () => {
     await closeNode(node)
   })
 
-  it('should re-warn during a long outage instead of going quiet', async () => {
+  it('should keep a readable trail through a day-long outage', async () => {
     const node = buildNode()
     await settle()
 
-    for (let i = 0; i < 12; i++) {
+    current().emit('error', new Error('Permission denied'))
+
+    for (let i = 0; i < 24 * 60; i++) {
+      jest.advanceTimersByTime(60000)
       current().emit('error', new Error('Permission denied'))
-      jest.advanceTimersByTime(PAST_BACKOFF)
-      await settle()
     }
 
-    expect(node.warn).toHaveBeenCalledTimes(2)
-    expect(node.warn.mock.calls[1][0]).toMatch(/attempt 10, failing for \d+s/)
+    // Doubling to a one hour ceiling: a handful of lines, not one per retry.
+    expect(node.warn.mock.calls.length).toBeLessThan(40)
+    expect(node.warn.mock.calls.length).toBeGreaterThan(20)
+    expect(MAX_WARN_GAP_MS).toBe(3600000)
 
     await closeNode(node)
   })

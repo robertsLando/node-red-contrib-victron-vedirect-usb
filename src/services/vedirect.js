@@ -14,6 +14,10 @@ const debugOutput = debug('vedirect:output')
 // combinations that cannot happen.
 const OPENING = 'opening'
 const OPEN = 'open'
+// The link is gone and the owner has been told, but the descriptor may still be
+// held: a zero-byte read ends the stream without closing the port. Only CLOSED
+// means the fd is released.
+const LOST = 'lost'
 const CLOSING = 'closing'
 const CLOSED = 'closed'
 
@@ -27,6 +31,9 @@ const CLOSED = 'closed'
  * @emits data  for every complete, checksum-valid frame
  * @emits error on a serial port error
  * @emits close once the port is gone, with `{ disconnected }`
+ *
+ * `state` is readable but not writable by owners: OPENING, OPEN, LOST (link
+ * gone, descriptor possibly still held), CLOSING, CLOSED (descriptor released).
  */
 class VEDirect extends EventEmitter {
   constructor (path) {
@@ -121,11 +128,11 @@ class VEDirect extends EventEmitter {
   }
 
   _closed (info) {
-    if (this.state === CLOSING || this.state === CLOSED) {
+    if (this.state === LOST || this.state === CLOSING || this.state === CLOSED) {
       return
     }
 
-    this.state = CLOSED
+    this.state = LOST
     this.emit('close', info)
   }
 
@@ -192,11 +199,21 @@ class VEDirect extends EventEmitter {
     }
 
     // Closing mid-open would leave the pending open to succeed unowned, so
-    // wait for it to land (or fail) first.
+    // wait for it to land (or fail) first. An open that fails leaves nothing
+    // to close, and the owner is closing anyway, so it is not a close error.
     if (wasOpening) {
       debugSerial('Close requested while still opening')
       this.serial.once('open', closePort)
-      this.serial.once('error', finish)
+      this.serial.once('error', () => finish(null))
+      return
+    }
+
+    // The driver flips `closing` before it awaits the fd release, so a
+    // disconnect caught mid-teardown reads as shut but is not. Waiting for its
+    // 'close' is the only way to avoid telling our caller the fd is free.
+    if (this.serial.closing) {
+      debugSerial('Close requested while the driver is already closing')
+      this.serial.once('close', () => finish(null))
       return
     }
 
@@ -213,6 +230,7 @@ class VEDirect extends EventEmitter {
 
 VEDirect.OPENING = OPENING
 VEDirect.OPEN = OPEN
+VEDirect.LOST = LOST
 VEDirect.CLOSING = CLOSING
 VEDirect.CLOSED = CLOSED
 

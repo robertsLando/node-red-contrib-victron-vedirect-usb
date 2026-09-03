@@ -156,9 +156,9 @@ This does not depend on the timeout setting, and retries never stop. The node
 treats a port as dead after 60 seconds of silence, or after the configured
 timeout if that is longer — the timeout only ever lengthens the window.
 
-Every reconnect is logged: a warning names the failure, repeated once every ten
-attempts with the attempt count and outage duration, and an info line records
-the recovery.
+An ongoing outage is logged once, then again on a widening interval from one
+minute out to one hour. Each line names the port, the attempt count and the
+outage duration, and an info line records the recovery.
 
 ### Status
 
@@ -168,5 +168,5 @@ the recovery.
 - Yellow ring, "stale data": connected, but no fresh data within the timeout.
 - Yellow ring, "reconnecting (disconnected)": the cable or port went away.
 - Yellow ring, "reconnecting (no data)": the port is open but the device went silent.
-- Red dot with a message and "(retrying)": the port could not be opened or reported an error.
+- Red dot, "retrying: <message>": the port could not be opened or reported an error.
 </script>

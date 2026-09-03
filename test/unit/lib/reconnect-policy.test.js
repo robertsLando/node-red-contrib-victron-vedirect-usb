@@ -1,4 +1,11 @@
-const { nextDelay, BASE_DELAY_MS, MAX_DELAY_MS } = require('../../../src/lib/reconnect-policy')
+const {
+  nextDelay,
+  nextWarnGap,
+  BASE_DELAY_MS,
+  MAX_DELAY_MS,
+  BASE_WARN_GAP_MS,
+  MAX_WARN_GAP_MS
+} = require('../../../src/lib/reconnect-policy')
 
 // Neutral jitter: base + base * ratio * (0.5 * 2 - 1) === base
 const noJitter = () => 0.5
@@ -53,6 +60,40 @@ describe('reconnect-policy', () => {
       for (let attempt = 0; attempt < 10; attempt++) {
         expect(nextDelay(attempt)).toBeGreaterThan(0)
       }
+    })
+  })
+
+  describe('nextWarnGap', () => {
+    it('should start at the base gap', () => {
+      expect(nextWarnGap(0)).toBe(BASE_WARN_GAP_MS)
+    })
+
+    it('should double on each warning', () => {
+      expect(nextWarnGap(1)).toBe(120000)
+      expect(nextWarnGap(2)).toBe(240000)
+    })
+
+    it('should cap at the maximum gap', () => {
+      expect(nextWarnGap(6)).toBe(MAX_WARN_GAP_MS)
+      expect(nextWarnGap(100)).toBe(MAX_WARN_GAP_MS)
+    })
+
+    it('should treat invalid counts as the first warning', () => {
+      expect(nextWarnGap(-1)).toBe(BASE_WARN_GAP_MS)
+      expect(nextWarnGap(undefined)).toBe(BASE_WARN_GAP_MS)
+      expect(nextWarnGap(NaN)).toBe(BASE_WARN_GAP_MS)
+    })
+
+    it('should keep a day-long outage to a readable number of lines', () => {
+      let elapsed = 0
+      let warnings = 0
+
+      while (elapsed < 24 * 60 * 60 * 1000) {
+        elapsed += nextWarnGap(warnings)
+        warnings++
+      }
+
+      expect(warnings).toBeLessThan(30)
     })
   })
 })

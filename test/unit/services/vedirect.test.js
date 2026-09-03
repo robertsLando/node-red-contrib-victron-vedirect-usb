@@ -15,6 +15,13 @@ class MockSerialPort extends PassThrough {
     this.emit('open')
   }
 
+  // The driver flips isOpen before it awaits the fd release, and only emits
+  // 'close' once the descriptor is actually gone.
+  beginSlowClose () {
+    this.isOpen = false
+    this.closing = true
+  }
+
   close (callback) {
     if (!this.isOpen) {
       return process.nextTick(() => callback && callback(new Error('Port is not open')))
@@ -66,6 +73,86 @@ describe('VEDirect', () => {
     port.open()
 
     expect(onOpen).toHaveBeenCalled()
+    expect(reader.state).toBe(VEDirect.OPEN)
+  })
+
+  it('should stay open when the port errors after opening', () => {
+    const reader = build()
+    reader.on('error', () => {})
+    port.open()
+
+    port.emit('error', new Error('parity'))
+
+    expect(reader.state).toBe(VEDirect.OPEN)
+  })
+
+  // A zero-byte read ends the stream but leaves the descriptor held, and
+  // serialport opens Linux ports with TIOCEXCL, so failing to close it here
+  // makes every later open on the same path fail to lock.
+  it('should still release the descriptor after the stream ends', (done) => {
+    const reader = build()
+    port.open()
+
+    reader.on('close', () => {
+      expect(reader.state).toBe(VEDirect.LOST)
+      expect(port.isOpen).toBe(true)
+
+      reader.close(() => {
+        expect(port.isOpen).toBe(false)
+        expect(reader.state).toBe(VEDirect.CLOSED)
+        done()
+      })
+    })
+
+    port.end()
+  })
+
+  it('should not re-close a port the driver already released', (done) => {
+    const reader = build()
+    port.open()
+    let closeCalls = 0
+    const realClose = port.close.bind(port)
+    port.close = (callback) => { closeCalls++; realClose(callback) }
+
+    reader.on('close', () => {
+      reader.close(() => {
+        expect(closeCalls).toBe(0)
+        done()
+      })
+    })
+
+    port.disconnect()
+  })
+
+  it('should wait for a close the driver already started', (done) => {
+    const reader = build()
+    port.open()
+    port.beginSlowClose()
+
+    let settled = false
+    reader.close(() => { settled = true })
+
+    setImmediate(() => {
+      expect(settled).toBe(false)
+      port.closing = false
+      port.emit('close')
+      setImmediate(() => {
+        expect(settled).toBe(true)
+        done()
+      })
+    })
+  })
+
+  it('should settle a mid-open close when the open fails instead', (done) => {
+    const reader = build()
+
+    reader.close((err) => {
+      expect(err).toBeNull()
+      expect(reader.state).toBe(VEDirect.CLOSED)
+      done()
+    })
+
+    port.emit('error', new Error('ENOENT'))
   })
 
   it('should emit parsed frames as data', (done) => {

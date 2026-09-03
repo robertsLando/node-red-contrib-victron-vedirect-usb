@@ -20,7 +20,7 @@ describe('connection-status', () => {
       })).toEqual({
         fill: 'red',
         shape: 'dot',
-        text: 'Permission denied, cannot open /dev/ttyUSB0 (retrying)'
+        text: 'retrying: Permission denied, cannot open /dev/ttyUSB0'
       })
     })
 
@@ -28,7 +28,7 @@ describe('connection-status', () => {
       expect(getStatusDisplay({ state: ERROR })).toEqual({
         fill: 'red',
         shape: 'dot',
-        text: 'error (retrying)'
+        text: 'retrying: error'
       })
     })
 

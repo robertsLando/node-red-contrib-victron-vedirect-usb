@@ -45,7 +45,9 @@ function getStatusDisplay (status) {
   // Retries never stop, so an error is never the last word. Saying so keeps a
   // red badge from reading as terminal.
   if (state === ERROR) {
-    return { fill: 'red', shape: 'dot', text: `${error || 'error'} (retrying)` }
+    // Marker first: a driver message can be long enough that the badge clips,
+    // and the half saying we haven't given up is the half worth keeping.
+    return { fill: 'red', shape: 'dot', text: `retrying: ${error || 'error'}` }
   }
 
   if (state === CONNECTING) {
