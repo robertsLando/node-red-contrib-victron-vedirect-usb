@@ -72,7 +72,9 @@ re-resolved on every attempt, so a cable that comes back on a different
 arrives. An ongoing outage is logged once, then again on a widening interval
 from one minute out to one hour, so a week of flapping stays readable. Each
 line names the port, the attempt count and how long the outage has lasted, and
-a recovery line records the return.
+a recovery line records the return. That interval only resets once the link has
+delivered data steadily for a minute, so a cable that flaps every few seconds
+stays under one outage rather than opening a fresh one each cycle.
 
 Supervision does not depend on the timeout setting, and retries never stop. The
 node treats a port as dead after 60 seconds of silence, or after the configured
@@ -91,6 +93,7 @@ questions.
 | Yellow ring, "reconnecting (disconnected)" | The cable or port went away; waiting to retry |
 | Yellow ring, "reconnecting (no data)" | The port is open but the device went silent; waiting to retry |
 | Red dot, `retrying: <message>` | The port could not be opened or reported an error |
+| Grey ring, "unknown" | Should not happen; the connection state was not recognised |
 
 ## Development
 
@@ -104,9 +107,11 @@ src/
 │   ├── field-definitions.js
 │   ├── value-parser.js
 │   ├── connection-status.js
+│   ├── duration.js
 │   ├── port-resolver.js
 │   ├── reconnect-policy.js
-│   └── stale-detector.js
+│   ├── stale-detector.js
+│   └── warn-throttle.js
 ├── services/         # Business logic and stream handlers
 │   ├── parser.js
 │   └── vedirect.js
@@ -116,8 +121,8 @@ src/
 test/
 ├── unit/            # Unit tests
 │   ├── lib/
-│   ├── services/
-│   └── utils/
+│   ├── nodes/
+│   └── services/
 └── fixtures/        # Test data and fixtures
 ```
 
@@ -143,7 +148,8 @@ Test coverage reports are generated in the `coverage/` directory after running `
 Target coverage goals:
 - **lib/**: 100% (pure functions should be fully testable)
 - **services/**: 80%+ (core business logic)
-- **nodes/**: Not covered by unit tests (requires Node-RED runtime)
+- **nodes/**: The supervisor is covered by driving the node against a stubbed
+  Node-RED runtime and a stubbed serial connection (`test/unit/nodes/`)
 
 ## License
 

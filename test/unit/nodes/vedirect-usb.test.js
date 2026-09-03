@@ -39,7 +39,8 @@ const {
   MAX_DELAY_MS,
   LIVENESS_TIMEOUT_MS,
   BASE_WARN_GAP_MS,
-  MAX_WARN_GAP_MS
+  MAX_WARN_GAP_MS,
+  STEADY_MS
 } = require('../../../src/lib/reconnect-policy')
 
 // Backoff is jittered, so no test may assume an exact delay. Stepping past the
@@ -329,8 +330,10 @@ describe('VEDirectUSB node', () => {
     current().emit('open')
     current().emit('data', PID_FRAME)
 
-    expect(node.log).toHaveBeenCalledTimes(1)
-    expect(node.log.mock.calls[0][0]).toMatch(/on \/dev\/ttyUSB0 after 1 attempt\(s\) over \d+s/)
+    // Recovery goes to warn, not log: only warn and error reach the editor's
+    // debug sidebar, where the operator is watching the failure it closes.
+    expect(node.warn.mock.calls.some(([msg]) =>
+      /Receiving data again on \/dev\/ttyUSB0 after 1 attempt\(s\) over \d+s/.test(msg))).toBe(true)
 
     // Backoff restarted, so the next retry lands well inside the cap.
     current().emit('close', {})
@@ -541,7 +544,8 @@ describe('VEDirectUSB node', () => {
       current().emit('error', new Error('No such file or directory'))
     }
 
-    const duringOutage = node.warn.mock.calls.length
+    const failureWarns = () => node.warn.mock.calls.filter(([msg]) => /retrying/.test(msg)).length
+    const duringOutage = failureWarns()
     expect(duringOutage).toBe(8)
 
     jest.advanceTimersByTime(PAST_BACKOFF)
@@ -558,7 +562,7 @@ describe('VEDirectUSB node', () => {
 
     current().emit('close', { disconnected: true })
 
-    expect(node.warn).toHaveBeenCalledTimes(duringOutage + 1)
+    expect(failureWarns()).toBe(duringOutage + 1)
 
     await closeNode(node)
   })
@@ -578,9 +582,9 @@ describe('VEDirectUSB node', () => {
       jest.advanceTimersByTime(5000)
     }
 
-    // Twenty flaps over about ten minutes: a few lines, not forty.
-    expect(node.warn.mock.calls.length).toBeLessThanOrEqual(5)
-    expect(node.log.mock.calls.length).toBeLessThanOrEqual(5)
+    // Twenty flaps over about ten minutes. Both channels are throttled, so a
+    // handful of lines rather than the forty an untrottled pair would give.
+    expect(node.warn.mock.calls.length).toBeLessThanOrEqual(10)
 
     await closeNode(node)
   })
@@ -618,6 +622,86 @@ describe('VEDirectUSB node', () => {
     await settle()
 
     expect(node.warn.mock.calls.some(([msg]) => /Failed to close \/dev\/ttyUSB0: EIO/.test(msg))).toBe(true)
+
+    await closeNode(node)
+  })
+
+  it('should report a later close failure rather than inherit the last one', async () => {
+    const node = await connectedNode()
+
+    // Fail a close, then close cleanly, then fail again. The clean teardown
+    // ends the run, so the second failure is reported at once.
+    current().closeError = new Error('EIO')
+    current().emit('close', { disconnected: true })
+    jest.advanceTimersByTime(PAST_BACKOFF)
+    await settle()
+
+    current().emit('close', { disconnected: true })
+    jest.advanceTimersByTime(PAST_BACKOFF)
+    await settle()
+
+    current().closeError = new Error('EBUSY')
+    current().emit('close', { disconnected: true })
+    await settle()
+
+    expect(node.warn.mock.calls.some(([msg]) => /Failed to close .*EBUSY/.test(msg))).toBe(true)
+
+    await closeNode(node)
+  })
+
+  // Without resetting the recovery channel its gap keeps widening, so a later
+  // recovery goes unannounced while the failure that preceded it is on screen.
+  it('should announce every recovery, not just the early ones', async () => {
+    const node = await connectedNode()
+    const recoveries = () =>
+      node.warn.mock.calls.filter(([msg]) => /Receiving data again/.test(msg)).length
+
+    for (let round = 0; round < 3; round++) {
+      current().emit('close', { disconnected: true })
+      jest.advanceTimersByTime(PAST_BACKOFF)
+      await settle()
+      current().emit('open')
+
+      // Hold the link long enough for the outage to count as over.
+      for (let i = 0; i < 70; i++) {
+        current().emit('data', PID_FRAME)
+        jest.advanceTimersByTime(1000)
+      }
+    }
+
+    expect(recoveries()).toBe(3)
+
+    await closeNode(node)
+  })
+
+  // A device that sends one frame and then dies must not age into "recovered"
+  // while silent, or a flap would clear the throttle on every cycle.
+  it('should not count a single frame followed by silence as recovery', async () => {
+    // A ten minute timeout keeps the liveness watchdog out of the way, so the
+    // only thing that could speak again is a reset throttle.
+    const node = await connectedNode({ timeout: 600 })
+    const failureWarns = () => node.warn.mock.calls.filter(([msg]) => /retrying/.test(msg)).length
+
+    // Widen the quiet period well past the steady window.
+    current().emit('close', { disconnected: true })
+    for (let i = 0; i < 7; i++) {
+      jest.advanceTimersByTime(MAX_WARN_GAP_MS + 1000)
+      await settle()
+      current().emit('error', new Error('No such file or directory'))
+    }
+    const duringOutage = failureWarns()
+
+    jest.advanceTimersByTime(PAST_BACKOFF)
+    await settle()
+    current().emit('open')
+    current().emit('data', PID_FRAME)
+
+    // One frame, then nothing, for longer than the steady window.
+    jest.advanceTimersByTime(STEADY_MS + 5000)
+
+    current().emit('close', { disconnected: true })
+
+    expect(failureWarns()).toBe(duringOutage)
 
     await closeNode(node)
   })

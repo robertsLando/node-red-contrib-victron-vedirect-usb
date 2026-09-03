@@ -84,9 +84,12 @@ class VEDirect extends EventEmitter {
       this._closed({ disconnected: true })
     })
 
-    this.serial.on('data', (data) => {
+    // Kept by reference: removeAllListeners('data') would also take pipe()'s
+    // own handler, severing the chain as a side effect rather than on purpose.
+    this.onSerialData = (data) => {
       debugSerial('Received %d bytes: %s', data.length, data.toString('hex').substring(0, 40))
-    })
+    }
+    this.serial.on('data', this.onSerialData)
 
     this.rl = new DelimiterParser({
       delimiter: Buffer.from([0x0d, 0x0a], 'hex'),
@@ -144,7 +147,11 @@ class VEDirect extends EventEmitter {
   close (callback) {
     const done = callback || (() => {})
 
+    // A reader can reach CLOSED without us: an open that failed, for one. The
+    // teardown is idempotent, and CLOSED has to mean detached as well as
+    // released, or a dead reader keeps its owner's listeners.
     if (this.state === CLOSED) {
+      this.detach()
       return process.nextTick(() => done(null))
     }
 
@@ -163,17 +170,7 @@ class VEDirect extends EventEmitter {
     this.state = CLOSING
     this.pendingClose = [done]
 
-    this.serial.unpipe(this.rl)
-    this.rl.unpipe(this.ve)
-    this.ve.unpipe(this.output)
-
-    // Drop our listeners before closing so a late frame, or the close we are
-    // about to cause, can't reach an owner that has already moved on.
-    this.removeAllListeners()
-    this.serial.removeAllListeners('data')
-    this.serial.removeAllListeners('close')
-    this.serial.removeAllListeners('end')
-    this.detachOpenListeners()
+    this.detach()
 
     const finish = (err) => {
       if (this.state === CLOSED) {
@@ -228,6 +225,23 @@ class VEDirect extends EventEmitter {
     finish(null)
   }
 
+  // Stop the byte flow and drop our listeners, so a late frame - or the close
+  // we are about to cause - can't reach an owner that has already moved on.
+  detach () {
+    this.serial.unpipe(this.rl)
+    this.rl.unpipe(this.ve)
+    this.ve.unpipe(this.output)
+
+    this.removeAllListeners()
+    this.serial.removeListener('data', this.onSerialData)
+    this.serial.removeAllListeners('close')
+    this.serial.removeAllListeners('end')
+    this.detachOpenListeners()
+  }
+
+  // Note the coupling: 'open' also carries the driver's own primed-read resume
+  // (@serialport/stream once('open') in _read), so this must only ever run on a
+  // reader that is being discarded.
   detachOpenListeners () {
     this.serial.removeAllListeners('open')
     this.serial.removeAllListeners('error')

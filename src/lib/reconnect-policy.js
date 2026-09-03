@@ -17,6 +17,11 @@ const LIVENESS_TIMEOUT_MS = 60000
 const BASE_WARN_GAP_MS = 60000
 const MAX_WARN_GAP_MS = 3600000
 
+// How long a connection must keep delivering before an outage counts as over
+// and the warning throttle resets. It has to outlast a flap cycle, and there is
+// no point resetting sooner than the throttle's own shortest quiet period.
+const STEADY_MS = BASE_WARN_GAP_MS
+
 const BASE_DELAY_MS = 1000
 const MAX_DELAY_MS = 30000
 const JITTER_RATIO = 0.2
@@ -55,6 +60,7 @@ module.exports = {
   nextWarnGap,
   BASE_WARN_GAP_MS,
   MAX_WARN_GAP_MS,
+  STEADY_MS,
   LIVENESS_TIMEOUT_MS,
   BASE_DELAY_MS,
   MAX_DELAY_MS

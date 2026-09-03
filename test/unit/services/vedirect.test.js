@@ -163,6 +163,46 @@ describe('VEDirect', () => {
     })
   })
 
+  // removeAllListeners stops our own events, but bytes still flowing through
+  // the pipe chain keep the parser and its buffers alive on a dead reader.
+  it('should stop the byte flow, not just the events, on close', (done) => {
+    const reader = build()
+    port.open()
+
+    reader.close(() => {
+      const parsed = []
+      reader.ve.on('data', (frame) => parsed.push(frame))
+
+      port.write(VALID_FRAME)
+
+      setImmediate(() => {
+        expect(parsed).toEqual([])
+        done()
+      })
+    })
+  })
+
+  it('should detach a reader whose open failed', (done) => {
+    const reader = build()
+    reader.on('error', () => {})
+    port.emit('error', new Error('ENOENT'))
+
+    expect(reader.state).toBe(VEDirect.CLOSED)
+
+    reader.close(() => {
+      const parsed = []
+      reader.ve.on('data', (frame) => parsed.push(frame))
+
+      port.isOpen = true
+      port.write(VALID_FRAME)
+
+      setImmediate(() => {
+        expect(parsed).toEqual([])
+        done()
+      })
+    })
+  })
+
   it('should settle a mid-open close when the open fails instead', (done) => {
     const reader = build()
 

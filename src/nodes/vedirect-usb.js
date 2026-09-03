@@ -17,15 +17,17 @@ module.exports = function (RED) {
     REASON_OPEN_FAILURE
   } = require('../lib/connection-status')
   const { resolveSerialPort } = require('../lib/port-resolver')
-  const { nextDelay, nextWarnGap, LIVENESS_TIMEOUT_MS } = require('../lib/reconnect-policy')
+  const { nextDelay, LIVENESS_TIMEOUT_MS, STEADY_MS } = require('../lib/reconnect-policy')
+  const { createWarnThrottle } = require('../lib/warn-throttle')
+  const { describeDuration } = require('../lib/duration')
   const debug = require('debug')('vedirect:node')
 
   // How often the supervisor looks at the connection. Frequent enough that the
   // status badge tracks reality, cheap enough to run forever.
   const LIVENESS_CHECK_INTERVAL_MS = 1000
 
-  // How long a connection must keep delivering before an outage counts as over.
-  const STEADY_MS = 60000
+  // How long to wait for in-flight closes before letting Node-RED continue.
+  const CLOSE_TIMEOUT_MS = 5000
 
   // /dev/serial/by-id/... symlinks are maintained by udev on Linux and stay
   // pointing at the same physical device across reboots/replugs, unlike
@@ -83,7 +85,7 @@ module.exports = function (RED) {
     const CONNECTION_CHANNEL = 'connection'
     const CLOSE_CHANNEL = 'close'
     const RECOVERY_CHANNEL = 'recovery'
-    const warnChannels = {}
+    const throttle = createWarnThrottle()
     let connection = {}
 
     // Readers whose close() is still in flight. Node-RED must not report the
@@ -119,40 +121,8 @@ module.exports = function (RED) {
     // hour. A cable that flaps for a week would otherwise bury every other log
     // line, and the operator can act on the first line just as well as the
     // four-hundredth.
-    function sayThrottled (channel, say, build) {
-      const now = Date.now()
-      const state = warnChannels[channel] || (warnChannels[channel] = { at: null, count: 0 })
-
-      if (state.at !== null && now - state.at < nextWarnGap(state.count - 1)) {
-        debug('Staying quiet about an ongoing %s problem', channel)
-        return
-      }
-
-      state.at = now
-      state.count++
-      say(build())
-    }
-
     function warnThrottled (channel, build) {
-      sayThrottled(channel, (message) => node.warn(message), build)
-    }
-
-    function resetWarnChannel (channel) {
-      delete warnChannels[channel]
-    }
-
-    function describeDuration (ms) {
-      const seconds = Math.round(ms / 1000)
-
-      if (seconds < 120) {
-        return `${seconds}s`
-      }
-
-      if (seconds < 7200) {
-        return `${Math.round(seconds / 60)}m`
-      }
-
-      return `${Math.round(seconds / 3600)}h`
+      throttle.say(channel, (message) => node.warn(message), build)
     }
 
     function reportFailure (message) {
@@ -179,16 +149,16 @@ module.exports = function (RED) {
 
       // Name the port this reader held, not whichever one the next attempt has
       // since resolved to.
-      const path = currentPath
+      const heldPath = currentPath
 
       reader.close((err) => {
         if (err) {
           // Not a connection failure, and during shutdown nothing retries.
-          warnThrottled(CLOSE_CHANNEL, () => `Failed to close ${path}: ${err.message || err}`)
+          warnThrottled(CLOSE_CHANNEL, () => `Failed to close ${heldPath}: ${err.message || err}`)
         } else {
           // A clean teardown ends this run of close trouble, so the next one
           // is reported at once rather than under an hour-wide quiet period.
-          resetWarnChannel(CLOSE_CHANNEL)
+          throttle.reset(CLOSE_CHANNEL)
         }
         closingReaders.delete(finished)
         settle()
@@ -295,7 +265,10 @@ module.exports = function (RED) {
               const attempts = reconnectAttempts
               const outage = describeDuration(Date.now() - failingSince)
 
-              sayThrottled(RECOVERY_CHANNEL, (message) => node.log(message),
+              // node.warn, not node.log: only warn and error reach the editor's
+              // debug sidebar, so a recovery logged any lower leaves the
+              // operator staring at a failure that reads as still open.
+              warnThrottled(RECOVERY_CHANNEL,
                 () => `Receiving data again on ${currentPath} after ${attempts} attempt(s) over ${outage}`)
 
               reconnectAttempts = 0
@@ -350,17 +323,19 @@ module.exports = function (RED) {
       const lastActivity = Math.max(lastDataTime || 0, connectedAt || 0) || null
 
       if (connection.state === CONNECTED && isStale(lastActivity, livenessMs)) {
-        steadySince = null
         connectionDropped(`No data for ${describeDuration(livenessMs)}`, REASON_STALE)
         return
       }
 
       // The link has held long enough to call it recovered, so the next outage
       // gets reported at once instead of inheriting this one's quiet period.
-      if (steadySince && Date.now() - steadySince >= STEADY_MS) {
+      // Anchored on the newest frame, not the clock: a device that delivers one
+      // frame and then dies would otherwise age into "recovered" while silent,
+      // and a flapping cable would clear the throttle on every cycle.
+      if (steadySince && lastDataTime - steadySince >= STEADY_MS) {
         steadySince = null
-        resetWarnChannel(CONNECTION_CHANNEL)
-        resetWarnChannel(RECOVERY_CHANNEL)
+        throttle.reset(CONNECTION_CHANNEL)
+        throttle.reset(RECOVERY_CHANNEL)
       }
 
       updateStatus()
@@ -410,8 +385,16 @@ module.exports = function (RED) {
       dataReader = null
       disposeReader(reader)
 
-      // Also wait on any reader a reconnect was already closing.
-      Promise.all(closingReaders).then(() => done())
+      // Wait on any reader a reconnect was already closing - but not forever.
+      // A driver call that neither resolves nor rejects (a wedged ioctl on a
+      // device yanked mid-transfer) would otherwise block the redeploy.
+      const closed = Promise.all(closingReaders)
+      const gaveUp = new Promise((resolve) => setTimeout(() => {
+        node.warn(`Gave up waiting for ${currentPath} to close`)
+        resolve()
+      }, CLOSE_TIMEOUT_MS))
+
+      Promise.race([closed, gaveUp]).then(() => done())
     })
   }
 

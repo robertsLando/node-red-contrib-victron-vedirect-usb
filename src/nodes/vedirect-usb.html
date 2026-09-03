@@ -158,7 +158,10 @@ timeout if that is longer — the timeout only ever lengthens the window.
 
 An ongoing outage is logged once, then again on a widening interval from one
 minute out to one hour. Each line names the port, the attempt count and the
-outage duration, and an info line records the recovery.
+outage duration, and a recovery line records the return. That interval only
+resets once the link has delivered data steadily for a minute, so a cable that
+flaps every few seconds stays under one outage rather than opening a fresh one
+each cycle.
 
 ### Status
 
@@ -169,4 +172,5 @@ outage duration, and an info line records the recovery.
 - Yellow ring, "reconnecting (disconnected)": the cable or port went away.
 - Yellow ring, "reconnecting (no data)": the port is open but the device went silent.
 - Red dot, `retrying: <message>`: the port could not be opened or reported an error.
+- Grey ring, "unknown": should not happen; the connection state was not recognised.
 </script>
