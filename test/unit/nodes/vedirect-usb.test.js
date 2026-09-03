@@ -49,6 +49,9 @@ const PAST_BACKOFF = MAX_DELAY_MS + 1
 
 const PID_FRAME = { PID: { value: '0xA389', product: 'SmartShunt 500A/50mV' } }
 
+// Mirrors CLOSE_TIMEOUT_MS in the node; it is local policy, not shared config.
+const CLOSE_TIMEOUT_MS = 5000
+
 let VEDirectUSB
 
 const RED = {
@@ -702,6 +705,84 @@ describe('VEDirectUSB node', () => {
     current().emit('close', { disconnected: true })
 
     expect(failureWarns()).toBe(duringOutage)
+
+    await closeNode(node)
+  })
+
+  // The deadline exists to flag a stuck descriptor. Left armed after a clean
+  // close it fires on every deploy, naming a node that is already gone.
+  it('should leave no deadline armed after a clean close', async () => {
+    const node = await connectedNode()
+
+    await closeNode(node)
+
+    expect(jest.getTimerCount()).toBe(0)
+
+    jest.advanceTimersByTime(CLOSE_TIMEOUT_MS * 2)
+
+    expect(node.warn.mock.calls.some(([msg]) => /Gave up waiting/.test(msg))).toBe(false)
+  })
+
+  it('should give up on a close that never finishes, naming the stuck port', async () => {
+    const node = await connectedNode()
+    current().holdClose = true
+
+    let done = false
+    const closing = new Promise((resolve) => {
+      node.emit('close', () => { done = true; resolve() })
+    })
+
+    await settle()
+    expect(done).toBe(false)
+
+    jest.advanceTimersByTime(CLOSE_TIMEOUT_MS + 1000)
+    await closing
+
+    expect(done).toBe(true)
+    expect(node.warn.mock.calls.some(([msg]) =>
+      /Gave up waiting for \/dev\/ttyUSB0 to close/.test(msg))).toBe(true)
+  })
+
+  // The headline claim is "1s up to 30s". Feeding a constant to nextDelay
+  // instead of the attempt count degrades that to a 1s hot retry loop against
+  // a dead USB hub, which on a battery-powered van matters.
+  it('should widen the gap between attempts', async () => {
+    const node = buildNode()
+    await settle()
+
+    current().emit('error', new Error('Permission denied'))
+
+    // First backoff is 800-1200ms, so this lands the second attempt.
+    jest.advanceTimersByTime(1300)
+    await settle()
+    expect(MockVEDirect.instances).toHaveLength(2)
+
+    current().emit('error', new Error('Permission denied'))
+
+    // The second is 1600-2400ms, so the same step must not be enough.
+    jest.advanceTimersByTime(1500)
+    await settle()
+    expect(MockVEDirect.instances).toHaveLength(2)
+
+    jest.advanceTimersByTime(1000)
+    await settle()
+    expect(MockVEDirect.instances).toHaveLength(3)
+
+    await closeNode(node)
+  })
+
+  it('should repaint the badge when it sends', async () => {
+    const node = await connectedNode()
+    node.status.mockClear()
+
+    node.emit('input', {})
+
+    expect(node.send).toHaveBeenCalledTimes(1)
+    expect(node.status).toHaveBeenCalledWith({
+      fill: 'green',
+      shape: 'dot',
+      text: 'SmartShunt 500A/50mV'
+    })
 
     await closeNode(node)
   })

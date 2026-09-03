@@ -7,11 +7,13 @@ class MockSerialPort extends PassThrough {
     super()
     this.options = options
     this.isOpen = false
+    this.opening = true
     MockSerialPort.instances.push(this)
   }
 
   open () {
     this.isOpen = true
+    this.opening = false
     this.emit('open')
   }
 
@@ -200,6 +202,46 @@ describe('VEDirect', () => {
         expect(parsed).toEqual([])
         done()
       })
+    })
+  })
+
+  // The reader can be LOST (the stream ended) while the driver's open is still
+  // in flight; declaring the descriptor free then would leak it.
+  it('should wait for an open the driver has not finished', (done) => {
+    const reader = build()
+    port.open()
+
+    reader.on('close', () => {
+      // Back to opening, as a reopen would leave it.
+      port.isOpen = false
+      port.opening = true
+
+      let settled = false
+      reader.close(() => { settled = true })
+
+      setImmediate(() => {
+        expect(settled).toBe(false)
+        port.open()
+        setImmediate(() => {
+          expect(settled).toBe(true)
+          expect(port.isOpen).toBe(false)
+          done()
+        })
+      })
+    })
+
+    port.end()
+  })
+
+  it('should leave no data listener behind on a reader it has closed', (done) => {
+    const reader = build()
+    port.open()
+    expect(port.listenerCount('data')).toBeGreaterThan(0)
+
+    reader.close(() => {
+      // Both the pipe's own handler and our debug listener.
+      expect(port.listenerCount('data')).toBe(0)
+      done()
     })
   })
 

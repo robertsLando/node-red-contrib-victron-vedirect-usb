@@ -178,6 +178,9 @@ class VEDirect extends EventEmitter {
       }
 
       this.state = CLOSED
+
+      // Not a repeat of detach(): the branches below arm listeners after it
+      // has run, and those are what this disarms.
       this.detachOpenListeners()
       this.serial.removeAllListeners('close')
 

@@ -66,7 +66,7 @@ reconnects when:
 - the port cannot be opened, or opening fails with an error
 - the port stays open but sends nothing (see the window below)
 
-Retries back off exponentially from 1 second up to 30 seconds, and the port is
+Retries back off exponentially from about 1 second up to 30 seconds, and the port is
 re-resolved on every attempt, so a cable that comes back on a different
 `/dev/ttyUSB*` name is still found. The backoff resets as soon as a frame
 arrives. An ongoing outage is logged once, then again on a widening interval
@@ -75,6 +75,12 @@ line names the port, the attempt count and how long the outage has lasted, and
 a recovery line records the return. That interval only resets once the link has
 delivered data steadily for a minute, so a cable that flaps every few seconds
 stays under one outage rather than opening a fresh one each cycle.
+
+Fields collected before a disconnect are kept, so a first frame that carries
+only part of the record does not lose the rest. They are held back while the
+data is stale, but with stale detection disabled an input can still emit fields
+from before the outage. If a `/dev/ttyUSB*` path might end up pointing at a
+different device, select the port so the serial number is stored with it.
 
 Supervision does not depend on the timeout setting, and retries never stop. The
 node treats a port as dead after 60 seconds of silence, or after the configured

@@ -143,13 +143,14 @@ module.exports = function (RED) {
         return
       }
 
-      let settle
-      const finished = new Promise((resolve) => { settle = resolve })
-      closingReaders.add(finished)
-
       // Name the port this reader held, not whichever one the next attempt has
       // since resolved to.
       const heldPath = currentPath
+
+      let settle
+      const pending = { heldPath }
+      pending.finished = new Promise((resolve) => { settle = resolve })
+      closingReaders.add(pending)
 
       reader.close((err) => {
         if (err) {
@@ -160,7 +161,7 @@ module.exports = function (RED) {
           // is reported at once rather than under an hour-wide quiet period.
           throttle.reset(CLOSE_CHANNEL)
         }
-        closingReaders.delete(finished)
+        closingReaders.delete(pending)
         settle()
       })
     }
@@ -388,13 +389,28 @@ module.exports = function (RED) {
       // Wait on any reader a reconnect was already closing - but not forever.
       // A driver call that neither resolves nor rejects (a wedged ioctl on a
       // device yanked mid-transfer) would otherwise block the redeploy.
-      const closed = Promise.all(closingReaders)
-      const gaveUp = new Promise((resolve) => setTimeout(() => {
-        node.warn(`Gave up waiting for ${currentPath} to close`)
-        resolve()
-      }, CLOSE_TIMEOUT_MS))
+      let closeTimer = null
+      const closed = Promise.all([...closingReaders].map((pending) => pending.finished))
+      const gaveUp = new Promise((resolve) => {
+        closeTimer = setTimeout(() => resolve(true), CLOSE_TIMEOUT_MS)
 
-      Promise.race([closed, gaveUp]).then(() => done())
+        // Never hold the process open on account of the deadline itself.
+        if (closeTimer.unref) {
+          closeTimer.unref()
+        }
+      })
+
+      Promise.race([closed.then(() => false), gaveUp]).then((timedOut) => {
+        clearTimeout(closeTimer)
+
+        if (timedOut) {
+          // Name what is actually stuck, which is whatever has not settled.
+          const stuck = [...closingReaders].map((pending) => pending.heldPath).join(', ')
+          node.warn(`Gave up waiting for ${stuck} to close`)
+        }
+
+        done()
+      })
     })
   }
 

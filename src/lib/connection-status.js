@@ -15,9 +15,7 @@ const REASON_STALE = 'stale data'
 const REASON_ERROR = 'error'
 const REASON_OPEN_FAILURE = 'open failure'
 
-// REASON_ERROR and REASON_OPEN_FAILURE are diagnostic only: both set an ERROR
-// state, whose badge shows the driver's own message.
-// Only the reasons that reach the badge. An error and a failed open show the
+// Only the reasons that reach the badge; an error and a failed open show the
 // driver's own message instead, which says more than any wording here could.
 // The operator needs "replug the cable" to look different from "the device
 // went quiet", which a bare "reconnecting" does not tell them.
